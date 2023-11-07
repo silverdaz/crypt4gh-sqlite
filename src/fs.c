@@ -8,10 +8,19 @@
 
 #include "includes.h"
 
+#define QUERY_C4GH(q) ((config.c4gh_decrypt)?q ## _no_ext : q)
+
 // Lookup entry
 static char *lookup_query = "SELECT inode, ctime, mtime, nlink, size, decrypted_size, is_dir "
                              "FROM entries e "
                              "WHERE parent_inode = ?1 and inode > 1 and name = ?2";
+static char *lookup_query_no_ext = "SELECT inode, ctime, mtime, nlink, size, decrypted_size, is_dir "
+                                 "FROM entries e "
+                                 "WHERE parent_inode = ?1 AND inode > 1 AND "
+                                 "       CASE WHEN is_dir "
+                                 "       THEN name = ?2"
+                                 "       ELSE SUBSTR(name, 1, LENGTH(name) - 5) = ?2"
+                                 "       END";
 
 // Get the attr $1: inode
 static char *getattr_query = "SELECT ctime, mtime, nlink, size, decrypted_size, is_dir "
@@ -23,6 +32,16 @@ static char *readdir_query = "SELECT inode, name, ctime, mtime, nlink, size, dec
                              "FROM entries "
                              "WHERE parent_inode = ?1 and inode > 1 "
                              "ORDER BY inode LIMIT ?3 OFFSET ?2";
+
+static char *readdir_query_no_ext = "SELECT inode, "
+                                    "       CASE WHEN is_dir "
+                                    "       THEN name "
+                                    "       ELSE SUBSTR(name, 1, LENGTH(name) - 5)"
+                                    "       END, "
+                                    "       ctime, mtime, nlink, size, decrypted_size, is_dir "
+                                    "FROM entries "
+                                    "WHERE parent_inode = ?1 and inode > 1 "
+                                    "ORDER BY inode LIMIT ?3 OFFSET ?2";
 
 // Get file information using file inode $1
 static char *file_info_query = "SELECT path, header FROM files WHERE inode = ?1";
@@ -40,6 +59,20 @@ static char *content_query = "WITH RECURSIVE cte AS ( "
                              "SELECT cte.name FROM cte WHERE cte.is_dir IS FALSE ";
                              //"ORDER BY parent_inode, inode DESC;";
 
+static char *content_query_no_ext = "WITH RECURSIVE cte AS ( "
+                             "  SELECT e.inode, '/' || e.name as name, e.parent_inode, e.is_dir "
+                             "  FROM entries e "
+                             "  WHERE parent_inode = 1 AND inode > 1"
+                             "  UNION ALL"
+                             "  SELECT e.inode, cte.name || '/' || e.name, e.parent_inode, e.is_dir "
+                             "  FROM entries e "
+                             "  INNER JOIN cte ON cte.inode=e.parent_inode AND cte.is_dir "
+                             ")"
+                             "SELECT SUBSTR(cte.name, 1, LENGTH(cte.name) - 5) FROM cte WHERE cte.is_dir IS FALSE ";
+                             //"ORDER BY parent_inode, inode DESC;";
+                             // because only files
+
+// works for both with or without .c4gh extension
 static char *content_len_query = "WITH RECURSIVE cte AS ( "
                                  "  SELECT e.inode, '/' || e.name as name, e.parent_inode, e.is_dir "
                                  "  FROM entries e "
@@ -119,9 +152,10 @@ static inline void
 sqlitefs_open_content(fuse_req_t req, struct fuse_file_info *fi)
 {
     sqlite3_stmt *stmt = NULL;
-    if( sqlite3_prepare_v2(config.db, content_query, -1, &stmt, NULL) /* != SQLITE_OK */ ||
+    D1("content statement: %s", QUERY_C4GH(content_query));
+    if( sqlite3_prepare_v2(config.db, QUERY_C4GH(content_query), -1, &stmt, NULL) /* != SQLITE_OK */ ||
 	!stmt){
-      E("Preparing content statement: %s | %s", content_query, sqlite3_errmsg(config.db));
+      E("Preparing content statement: %s | %s", QUERY_C4GH(content_query), sqlite3_errmsg(config.db));
       return (void) fuse_reply_err(req, EIO);
     }
 
@@ -237,7 +271,7 @@ sqlitefs_getattr(fuse_req_t req, fuse_ino_t ino,
     return (void) fuse_reply_attr(req, &s, config.attr_timeout);
   }
 
-  if( ino == FUSE_CONTENT_ID ){ /* It's the root directory itself */
+  if( ino == FUSE_CONTENT_ID ){ /* It's the content file */
     s.st_ino = ino;
     s.st_mode = S_IFREG | 0400;
     s.st_nlink = 1;
@@ -345,9 +379,9 @@ __attribute__((nonnull(3)))
 
 
   sqlite3_stmt *stmt = NULL;
-  if( sqlite3_prepare_v2(config.db, lookup_query, -1, &stmt, NULL) /* != SQLITE_OK */ ||
+  if( sqlite3_prepare_v2(config.db, QUERY_C4GH(lookup_query), -1, &stmt, NULL) /* != SQLITE_OK */ ||
       !stmt){
-    E("Preparing statement: %s | %s", lookup_query, sqlite3_errmsg(config.db));
+    E("Preparing statement: %s | %s", QUERY_C4GH(lookup_query), sqlite3_errmsg(config.db));
     return (void) fuse_reply_err(req, EIO);
   }
   
@@ -425,10 +459,10 @@ sqlitefs_opendir(fuse_req_t req, fuse_ino_t ino,
   D1("OPENDIR %lu", ino);
 
   sqlite3_stmt *stmt = NULL; 
-  if( sqlite3_prepare_v3(config.db, readdir_query, -1, SQLITE_PREPARE_PERSISTENT, /* will be reused by readdir_plus */
+  if( sqlite3_prepare_v3(config.db, QUERY_C4GH(readdir_query), -1, SQLITE_PREPARE_PERSISTENT, /* will be reused by readdir_plus */
 			 &stmt, NULL) /* != SQLITE_OK */ ||
       !stmt){
-    E("Preparing statement: %s | %s", readdir_query, sqlite3_errmsg(config.db));
+    E("Preparing statement: %s | %s", QUERY_C4GH(readdir_query), sqlite3_errmsg(config.db));
     return (void) fuse_reply_err(req, EIO);
   }
 
@@ -936,9 +970,10 @@ c4gh_read(fuse_req_t req, fuse_ino_t ino, size_t size,
       /* decrypt segment */
       D2("Decrypting");
       err = c4gh_decrypt_segment(fh);
-      D2("Decrypting error: %d", err);
-      if(err)
+      if(err){
+	D2("Decrypting error: %d", err);
 	goto done;
+      }
       fh->last_segment = segment_idx;
     }
 
