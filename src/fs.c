@@ -48,7 +48,7 @@ static char *file_info_query = "SELECT path, header FROM files WHERE inode = ?1"
 
 // Get content list | x'0a' = \n
 static char *content_query = "WITH RECURSIVE cte AS ( "
-                             "  SELECT e.inode, '/' || e.name as name, e.parent_inode, e.is_dir "
+                             "  SELECT e.inode, e.name as name, e.parent_inode, e.is_dir "
                              "  FROM entries e "
                              "  WHERE parent_inode = 1 AND inode > 1"
                              "  UNION ALL"
@@ -60,7 +60,7 @@ static char *content_query = "WITH RECURSIVE cte AS ( "
                              //"ORDER BY parent_inode, inode DESC;";
 
 static char *content_query_no_ext = "WITH RECURSIVE cte AS ( "
-                             "  SELECT e.inode, '/' || e.name as name, e.parent_inode, e.is_dir "
+                             "  SELECT e.inode, e.name as name, e.parent_inode, e.is_dir "
                              "  FROM entries e "
                              "  WHERE parent_inode = 1 AND inode > 1"
                              "  UNION ALL"
