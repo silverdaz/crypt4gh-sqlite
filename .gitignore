@@ -8,17 +8,18 @@ src/_old
 testing.mk
 aclocal.m4
 
+example/mnt
+
 crypt4gh-sqlite.fs
 
+aclocal.m4
 autom4te.cache
 Makefile
 config.log
 config.status
 config.h
 config.h.in
-tmp
 configure
-keys/libc4gh-keys.pc
 config.guess
 config.sub
 

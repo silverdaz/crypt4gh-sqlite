@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.69])
-AC_INIT([crypt4gh-sqlite],[1.0],[frederic.haziza@crg.eu])
+AC_INIT([crypt4gh-sqlite-fs],[2.0],[silverdaz@gmail.com])
 
 AC_CONFIG_SRCDIR([src/main.c])
 AC_CONFIG_HEADERS([src/config.h])
@@ -151,16 +151,6 @@ AC_LINK_IFELSE(
 #LIBS="-lssl -lcrypto $LIBS"
 #LIBS="$LIBS $($PKG_CONFIG --libs openssl)"
 
-openssl_engine=no
-AC_ARG_WITH([ssl-engine],
-	[  --with-openssl-engine       Enable OpenSSL (hardware) ENGINE support ],
-	[
-		if test "x$withval" != "xno" ; then
-			openssl_engine=yes
-		fi
-	]
-)
-
 # Determine OpenSSL library version
 AC_MSG_CHECKING([OpenSSL library version])
 AC_RUN_IFELSE(
@@ -189,11 +179,11 @@ AC_RUN_IFELSE(
 		ssl_library_ver=`cat conftest.ssllibver`
 		# Check version is supported.
 		case "$ssl_library_ver" in
-			101*)   ;; # 1.1.x
-			200*)   ;; # LibreSSL
-			300*)   ;; # OpenSSL development branch.
+			#101*)   ;; # 1.1.x
+			#200*)   ;; # LibreSSL
+			3*)   ;; # OpenSSL 3.x
 		        *)
-				AC_MSG_ERROR([OpenSSL >= 1.1.0 required (have "$ssl_library_ver")])
+				AC_MSG_ERROR([OpenSSL >= 3.x required (have "$ssl_library_ver")])
 		                ;;
 		esac
 		AC_MSG_RESULT([$ssl_library_ver])
@@ -207,7 +197,7 @@ AC_RUN_IFELSE(
 	]
 )
 
-# Determine OpenSSL version
+# Print OpenSSL version
 AC_MSG_CHECKING([OpenSSL version])
 AC_RUN_IFELSE(
 	[AC_LANG_PROGRAM([[
@@ -270,30 +260,6 @@ if test "x$no_attrib_nonnull" != "x1" ; then
 	AC_DEFINE([HAVE_ATTRIBUTE__NONNULL__], [1], [Have attribute nonnull])
 fi
 
-if test "$GCC" = "yes"; then
-   AC_MSG_CHECKING([if $CC accepts -fno-builtin-memset])
-   saved_CFLAGS="$CFLAGS"
-   CFLAGS="$CFLAGS -fno-builtin-memset"
-   AC_LINK_IFELSE([AC_LANG_PROGRAM([[ #include <string.h> ]],
-		[[ char b[10]; memset(b, 0, sizeof(b)); ]])],
-	[ AC_MSG_RESULT([yes]) ],
-	[ AC_MSG_RESULT([no])
-	  CFLAGS="$saved_CFLAGS" ]
-	)
-
-   AC_MSG_CHECKING([gcc version])
-   GCC_VER=`$CC -v 2>&1 | $AWK '/gcc version /{print $3}'`
-   case $GCC_VER in
-	1.*) no_attrib_nonnull=1 ;;
-	2.8* | 2.9*)
-	     no_attrib_nonnull=1
-	     ;;
-	2.*) no_attrib_nonnull=1 ;;
-	*) ;;
-   esac
-   AC_MSG_RESULT([$GCC_VER])
-fi
-
 
 AC_CACHE_CHECK([whether $CC implements __FUNCTION__], ac_cv_cc_implements___FUNCTION__, [
 	AC_LINK_IFELSE([AC_LANG_PROGRAM([[ #include <stdio.h> ]],
@@ -321,7 +287,6 @@ fi
 
 #######################################################
 
-# Readpassphrase from system or from the BSD-compatible. Use libbsd instead?
 AC_CHECK_HEADERS([ \
 	blf.h \
 	crypt.h \
@@ -342,10 +307,6 @@ AC_CHECK_HEADERS([ \
 	pwd.h \
 	grp.h \
 ])
-
-# # We need -lresolv for b64_pton
-# #AC_SEARCH_LIBS([b64_pton], [resolv])
-# AC_CHECK_LIB([resolv], [b64_pton], [LIBS="$LIBS -lresolv"])
 
 # Check for Endianness
 AC_C_BIGENDIAN(
@@ -394,209 +355,32 @@ AC_CHECK_FUNCS([ \
 	SHA512Update \
 	b64_ntop \
 	b64_pton \
-	bcopy \
 	bcrypt_pbkdf \
 	blf_enc \
 	bzero \
 	explicit_bzero \
 	freezero \
-	memmem \
-	memmove \
 	memset_s \
-	raise \
-	recallocarray \
 	strdup \
 	strerror \
 ])
 
+	# memmem \
+	# memmove \
 	#__b64_pton \
 	#__b64_ntop \
-
-AC_CHECK_DECLS([bzero, memmem])
-
-# Make sure prototypes are defined for these before using them.
-AC_CHECK_DECL([strsep],
-	[AC_CHECK_FUNCS([strsep])],
-	[],
-	[
-#ifdef HAVE_STRING_H
-# include <string.h>
-#endif
-	])
 
 #######################################################
 # OpenSSL funcs
 ###################################################
 
 AC_CHECK_FUNCS([ \
-	BN_is_prime_ex \
-	DSA_generate_parameters_ex \
-	EVP_CIPHER_CTX_ctrl \
-	EVP_DigestFinal_ex \
-	EVP_DigestInit_ex \
-	EVP_MD_CTX_cleanup \
-	EVP_MD_CTX_copy_ex \
-	EVP_MD_CTX_init \
-	HMAC_CTX_init \
-	RSA_generate_key_ex \
-	RSA_get_default_method \
+	OPENSSL_init_crypto \
+        PKCS5_PBKDF2_HMAC \
+	EVP_MD_CTX_new \
+	EVP_MD_CTX_free \
+	EVP_sha256 \
 ])
-
-# OpenSSL_add_all_algorithms may be a macro.
-AC_CHECK_FUNC(OpenSSL_add_all_algorithms,
-    AC_DEFINE(HAVE_OPENSSL_ADD_ALL_ALGORITHMS, 1, [as a function]),
-    AC_CHECK_DECL(OpenSSL_add_all_algorithms,
-	AC_DEFINE(HAVE_OPENSSL_ADD_ALL_ALGORITHMS, 1, [as a macro]), ,
-	[[#include <openssl/evp.h>]]
-    )
-)
-
-# LibreSSL/OpenSSL 1.1x API
-AC_CHECK_FUNCS([ \
-		OPENSSL_init_crypto \
-		DH_get0_key \
-		DH_get0_pqg \
-		DH_set0_key \
-		DH_set_length \
-		DH_set0_pqg \
-		DSA_get0_key \
-		DSA_get0_pqg \
-		DSA_set0_key \
-		DSA_set0_pqg \
-		DSA_SIG_get0 \
-		DSA_SIG_set0 \
-		ECDSA_SIG_get0 \
-		ECDSA_SIG_set0 \
-		EVP_CIPHER_CTX_iv \
-		EVP_CIPHER_CTX_iv_noconst \
-		EVP_CIPHER_CTX_get_iv \
-		EVP_CIPHER_CTX_set_iv \
-		RSA_get0_crt_params \
-		RSA_get0_factors \
-		RSA_get0_key \
-		RSA_set0_crt_params \
-		RSA_set0_factors \
-		RSA_set0_key \
-		RSA_meth_free \
-		RSA_meth_dup \
-		RSA_meth_set1_name \
-		RSA_meth_get_finish \
-		RSA_meth_set_priv_enc \
-		RSA_meth_set_priv_dec \
-		RSA_meth_set_finish \
-		EVP_PKEY_get0_RSA \
-		EVP_MD_CTX_new \
-		EVP_MD_CTX_free \
-		EVP_chacha20 \
-])
-
-# Check if we decided to use the engine
-if test "x$openssl_engine" = "xyes" ; then
-	AC_MSG_CHECKING([for OpenSSL ENGINE support])
-	AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[
-#include <openssl/engine.h>
-		]], [[
-			ENGINE_load_builtin_engines();
-			ENGINE_register_all_complete();
-		]])],
-		[ AC_MSG_RESULT([yes])
-		  AC_DEFINE([USE_OPENSSL_ENGINE], [1],
-		     [Enable OpenSSL engine support])
-		], [ AC_MSG_ERROR([OpenSSL ENGINE support not found])
-	])
-fi
-
-# Check for OpenSSL without EVP_aes_{192,256}_cbc
-AC_MSG_CHECKING([whether OpenSSL has crippled AES support])
-AC_LINK_IFELSE(
-	[AC_LANG_PROGRAM([[
-#include <stdlib.h>
-#include <string.h>
-#include <openssl/evp.h>
-	]], [[
-	exit(EVP_aes_192_cbc() == NULL || EVP_aes_256_cbc() == NULL);
-	]])],
-	[
-		AC_MSG_RESULT([no])
-	],
-	[
-		AC_MSG_RESULT([yes])
-		AC_DEFINE([OPENSSL_LOBOTOMISED_AES], [1],
-		    [libcrypto is missing AES 192 and 256 bit functions])
-	]
-)
-
-# Check for OpenSSL with EVP_aes_*ctr
-AC_MSG_CHECKING([whether OpenSSL has AES CTR via EVP])
-AC_LINK_IFELSE(
-	[AC_LANG_PROGRAM([[
-#include <stdlib.h>
-#include <string.h>
-#include <openssl/evp.h>
-	]], [[
-	exit(EVP_aes_128_ctr() == NULL ||
-	    EVP_aes_192_cbc() == NULL ||
-	    EVP_aes_256_cbc() == NULL);
-	]])],
-	[
-		AC_MSG_RESULT([yes])
-		AC_DEFINE([OPENSSL_HAVE_EVPCTR], [1],
-		    [libcrypto has EVP AES CTR])
-	],
-	[
-		AC_MSG_RESULT([no])
-	]
-)
-
-# Check for OpenSSL with EVP_aes_*gcm
-AC_MSG_CHECKING([whether OpenSSL has AES GCM via EVP])
-AC_LINK_IFELSE(
-	[AC_LANG_PROGRAM([[
-#include <stdlib.h>
-#include <string.h>
-#include <openssl/evp.h>
-	]], [[
-	exit(EVP_aes_128_gcm() == NULL ||
-	    EVP_aes_256_gcm() == NULL ||
-	    EVP_CTRL_GCM_SET_IV_FIXED == 0 ||
-	    EVP_CTRL_GCM_IV_GEN == 0 ||
-	    EVP_CTRL_GCM_SET_TAG == 0 ||
-	    EVP_CTRL_GCM_GET_TAG == 0 ||
-	    EVP_CIPHER_CTX_ctrl(NULL, 0, 0, NULL) == 0);
-	]])],
-	[
-		AC_MSG_RESULT([yes])
-		AC_DEFINE([OPENSSL_HAVE_EVPGCM], [1],
-		    [libcrypto has EVP AES GCM])
-	],
-	[
-		AC_MSG_RESULT([no])
-	]
-)
-
-	AC_MSG_CHECKING([if EVP_DigestUpdate returns an int])
-	AC_LINK_IFELSE(
-		[AC_LANG_PROGRAM([[
-	#include <stdlib.h>
-	#include <string.h>
-	#include <openssl/evp.h>
-		]], [[
-		if(EVP_DigestUpdate(NULL, NULL,0))
-			exit(0);
-		]])],
-		[
-			AC_MSG_RESULT([yes])
-		],
-		[
-			AC_MSG_RESULT([no])
-			AC_DEFINE([OPENSSL_EVP_DIGESTUPDATE_VOID], [1],
-			    [Define if EVP_DigestUpdate returns void])
-		]
-	)
-
-# Check for SHA256, SHA384 and SHA512 support in OpenSSL
-AC_CHECK_FUNCS([EVP_sha256 EVP_sha384 EVP_sha512])
-
 
 #######################################################
 # Type checks
@@ -916,17 +700,9 @@ AC_ARG_WITH([syslog-level],
 
 #######################################################
 
-AC_CONFIG_FILES([Makefile \
-		 keys/Makefile \
-		 keys/openssh/Makefile \
-		 keys/openbsd-compat/Makefile \
-])
+AC_CONFIG_FILES([Makefile])
 
-AC_SUBST([OPENSSH_DEPEND], [$(cat $srcdir/keys/openssh/.depend)])
-AC_SUBST([OPENBSD_COMPAT_DEPEND], [$(cat $srcdir/keys/openbsd-compat/.depend)])
-AC_SUBST([KEYS_DEPEND], [$(cat $srcdir/keys/.depend)])
 AC_SUBST([DEPEND], [$(cat $srcdir/src/.depend)])
-
 AC_SUBST([DEBUG], [$DEBUG])
 
 AC_OUTPUT

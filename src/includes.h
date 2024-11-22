@@ -2,20 +2,26 @@
 
 #define _GNU_SOURCE /* avoid implicit declaration of *pt* functions */
 
-#ifndef FUSE_USE_VERSION
-#define FUSE_USE_VERSION 34
-#endif
-
-#define PACKAGE_VERSION "1.0"
-
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
 
+#ifndef PACKAGE_VERSION
+#define PACKAGE_VERSION "2.0"
+#endif
+
+#ifndef FUSE_USE_VERSION
+#define FUSE_USE_VERSION 34
+#endif
+
 #include <fuse_lowlevel.h>
 
+#ifndef FUSE_MAKE_VERSION
+#define FUSE_MAKE_VERSION(maj, min)  ((maj) * 100 + (min))
+#endif
+
 #ifndef FUSE_VERSION
-#define FUSE_VERSION (FUSE_MAJOR_VERSION * 10 + FUSE_MINOR_VERSION)
+#define FUSE_VERSION FUSE_MAKE_VERSION(FUSE_MAJOR_VERSION, FUSE_MINOR_VERSION)
 #endif
 
 #include <assert.h>
@@ -25,6 +31,7 @@
 #include <fcntl.h>
 #include <string.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <errno.h>
 #include <pthread.h>
 #include <netdb.h>
@@ -34,18 +41,9 @@
 #include <sys/time.h>
 #include <sys/mman.h>
 #include <limits.h>
-
 #include <strings.h>
-
-#ifdef HAVE_PWD_H
-#include <pwd.h>
-#endif
-
-#ifdef HAVE_GRP_H
-#include <grp.h>
-#endif
-
-#include <sodium.h>
+#include <sys/stat.h>
+#include <ctype.h>
 
 #define OFF_FMT "%lu"
 #define INO_FMT "%lu"
@@ -73,11 +71,33 @@
 #  define MAP_ANONYMOUS MAP_ANON
 #endif
 
+/* OpenBSD function replacements */
+#include "keys/base64.h"
+#include "keys/sha2.h"
+#include "keys/blf.h"
+#include "keys/readpassphrase.h"
 
-#include "sqlite-3.40.1/sqlite3.h"
+#ifndef HAVE_BCRYPT_PBKDF
+int	bcrypt_pbkdf(const char *, size_t, const u_int8_t *, size_t,
+    u_int8_t *, size_t, unsigned int);
+#endif
+
+#ifndef HAVE_EXPLICIT_BZERO
+void explicit_bzero(void *p, size_t n);
+#endif
+
+#ifndef HAVE_FREEZERO
+void freezero(void *, size_t);
+#endif
+
+#ifndef HAVE_TIMINGSAFE_BCMP
+int timingsafe_bcmp(const void *, const void *, size_t);
+#endif
+
+
+#include "sqlite-3.45.2/sqlite3.h"
 #include "crypt4gh.h"
-#include "crypt4gh/key.h"
-#include "readpassphrase.h"
+#include "keys/key.h"
 
 struct fs_config {
 
@@ -86,24 +106,22 @@ struct fs_config {
   time_t mounted_at;
   int direct_io;
 
-  int debug;
+  int debug; /* replace/overwrite the fuse debug */
   int verbose;
   int foreground;
   char *progname;
   int show_version;
   int show_help;
 
+  int show_dotdot;
+
   char *mountpoint;
   mode_t mnt_mode;
   double entry_timeout; /* in seconds, for which name lookups will be cached */
   double attr_timeout; /* in seconds for which file/directory attributes are cached */
 
-  char *content_filename;
-  size_t content_filename_len;
-
   unsigned int dir_cache;
   unsigned int file_cache;
-  unsigned int c4gh_decrypt;
 
   /* if Crypt4GH is enabled */
   char* seckeypath;
@@ -122,9 +140,9 @@ struct fs_config {
   int max_idle_threads;
 };
 
+
 extern struct fs_config config;
 struct fuse_lowlevel_ops* fs_operations(void);
-
 
 /* DEBUG output */
 #define D1(fmt, ...) if(config.debug > 0) fprintf(stderr, fmt "\n", ##__VA_ARGS__)
@@ -132,3 +150,18 @@ struct fuse_lowlevel_ops* fs_operations(void);
 #define D3(fmt, ...) if(config.debug > 2) fprintf(stderr, "          " fmt "\n", ##__VA_ARGS__)
 #define E(fmt, ...)  fprintf(stderr, "\x1b[31mError:\x1b[0m " fmt "\n", ##__VA_ARGS__)
 #define W(fmt, ...)  fprintf(stderr, "Warning: " fmt "\n", ##__VA_ARGS__)
+
+/*
+ * Prints byte array to its hexadecimal representation
+ */
+#define Hx(prefix, leading, v, len) { \
+    fprintf(stderr, prefix "%s: ", leading); \
+    size_t _i = 0;			     \
+    uint8_t* _p = (uint8_t*)v;				   \
+    for(;_i<len;_i++){ fprintf(stderr, "%02x", _p[_i] ); } \
+    fprintf(stderr, "\n");				   \
+  }
+
+#define H1(leading, v, len) if(config.debug > 0) Hx("", leading, v, len)
+#define H2(leading, v, len) if(config.debug > 1) Hx("     ", leading, v, len)
+#define H3(leading, v, len) if(config.debug > 2) Hx("          ", leading, v, len)

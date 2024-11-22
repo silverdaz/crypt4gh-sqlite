@@ -1,205 +1,422 @@
 /*
   Read-only Crypt4GH file system, listing info from an SQLite "database".
-  Copyright (C) 2021  Frédéric Haziza <frederic.haziza@crg.eu>
+  Copyright (C) 2023  Frédéric Haziza <silverdaz@gmail.com>
 
-  This program can be distributed under the terms of the GNU GPL.
+  This program can be distributed under the terms of the GNU Affero GPL.
   See the file COPYING.
 */
 
 #include "includes.h"
 
-#define QUERY_C4GH(q) ((config.c4gh_decrypt)?q ## _no_ext : q)
-
 // Lookup entry
-static char *lookup_query = "SELECT inode, ctime, mtime, nlink, size, decrypted_size, is_dir "
+static char *lookup_query = "SELECT inode, ctime, mtime, nlink, size, is_dir "
                              "FROM entries e "
                              "WHERE parent_inode = ?1 and inode > 1 and name = ?2";
-static char *lookup_query_no_ext = "SELECT inode, ctime, mtime, nlink, size, decrypted_size, is_dir "
-                                 "FROM entries e "
-                                 "WHERE parent_inode = ?1 AND inode > 1 AND "
-                                 "       CASE WHEN is_dir "
-                                 "       THEN name = ?2"
-                                 "       ELSE SUBSTR(name, 1, LENGTH(name) - 5) = ?2"
-                                 "       END";
 
 // Get the attr $1: inode
-static char *getattr_query = "SELECT ctime, mtime, nlink, size, decrypted_size, is_dir "
+static char *getattr_query = "SELECT ctime, mtime, nlink, size, is_dir "
                              "FROM entries e "
                              "WHERE inode = ?1 and inode > 1";
 
 // Read directory $1: parent inode, $2: offset (limit = 100)
-static char *readdir_query = "SELECT inode, name, ctime, mtime, nlink, size, decrypted_size, is_dir "
+static char *readdir_query = "SELECT inode, name, ctime, mtime, nlink, size, is_dir "
                              "FROM entries "
                              "WHERE parent_inode = ?1 and inode > 1 "
-                             "ORDER BY inode LIMIT ?3 OFFSET ?2";
-
-static char *readdir_query_no_ext = "SELECT inode, "
-                                    "       CASE WHEN is_dir "
-                                    "       THEN name "
-                                    "       ELSE SUBSTR(name, 1, LENGTH(name) - 5)"
-                                    "       END, "
-                                    "       ctime, mtime, nlink, size, decrypted_size, is_dir "
-                                    "FROM entries "
-                                    "WHERE parent_inode = ?1 and inode > 1 "
-                                    "ORDER BY inode LIMIT ?3 OFFSET ?2";
+                             "ORDER BY inode LIMIT ?3 OFFSET ?2"
+                             ";";
 
 // Get file information using file inode $1
-static char *file_info_query = "SELECT path, header FROM files WHERE inode = ?1";
-
-// Get content list | x'0a' = \n
-static char *content_query = "WITH RECURSIVE cte AS ( "
-                             "  SELECT e.inode, e.name as name, e.parent_inode, e.is_dir "
-                             "  FROM entries e "
-                             "  WHERE parent_inode = 1 AND inode > 1"
-                             "  UNION ALL"
-                             "  SELECT e.inode, cte.name || '/' || e.name, e.parent_inode, e.is_dir "
-                             "  FROM entries e "
-                             "  INNER JOIN cte ON cte.inode=e.parent_inode AND cte.is_dir "
-                             ")"
-                             "SELECT cte.name FROM cte WHERE cte.is_dir IS FALSE ";
-                             //"ORDER BY parent_inode, inode DESC;";
-
-static char *content_query_no_ext = "WITH RECURSIVE cte AS ( "
-                             "  SELECT e.inode, e.name as name, e.parent_inode, e.is_dir "
-                             "  FROM entries e "
-                             "  WHERE parent_inode = 1 AND inode > 1"
-                             "  UNION ALL"
-                             "  SELECT e.inode, cte.name || '/' || e.name, e.parent_inode, e.is_dir "
-                             "  FROM entries e "
-                             "  INNER JOIN cte ON cte.inode=e.parent_inode AND cte.is_dir "
-                             ")"
-                             "SELECT SUBSTR(cte.name, 1, LENGTH(cte.name) - 5) FROM cte WHERE cte.is_dir IS FALSE ";
-                             //"ORDER BY parent_inode, inode DESC;";
-                             // because only files
-
-// works for both with or without .c4gh extension
-static char *content_len_query = "WITH RECURSIVE cte AS ( "
-                                 "  SELECT e.inode, '/' || e.name as name, e.parent_inode, e.is_dir "
-                                 "  FROM entries e "
-                                 "  WHERE parent_inode=1 AND inode>1"
-                                 "  UNION ALL"
-                                 "  SELECT e.inode, cte.name || '/' || e.name, e.parent_inode, e.is_dir "
-                                 "  FROM entries e "
-                                 "  INNER JOIN cte ON cte.inode=e.parent_inode AND cte.is_dir "
-                                 ")"
-                                 "SELECT sum(length(name)+1) FROM cte WHERE cte.is_dir IS FALSE;";
+static char *file_info_query = "SELECT case when rel_path is null then null else concat(rtrim(mountpoint,'/'), '/', ltrim(rel_path,'/')) end AS path,"
+                               "       header, payload_size, prepend, append FROM files WHERE inode = ?1";
 
 #define DEFAULT_READDIR_LIMIT 100
 
-#define FUSE_CONTENT_ID 2
+static void
+crypt4gh_sqlite_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
+{
+  D1("GETATTR %lu", ino);
 
-static size_t content_len = 0;
+  struct stat s;
+  memset(&s, 0, sizeof(struct stat));
 
-struct buffer {
-  size_t len;
-  char *data;
-};
+  s.st_uid = config.uid;
+  s.st_gid = config.gid;
+  //s.st_blksize = 512;     /* Block size for filesystem I/O */
+  //s.st_blocks = 1;        /* Number of 512B blocks allocated */
 
-static inline size_t
-get_content_len(void){
-
-  if(content_len > 0)
-    return content_len;
-
-  D1("GET content len");
-
-  int rc = 0;
-  sqlite3_stmt *stmt = NULL;
-  if(sqlite3_prepare_v2(config.db, content_len_query, -1, &stmt, NULL) /* != SQLITE_OK */ ||
-     !stmt){
-    E("Preparing content len statement: %s | %s", content_len_query, sqlite3_errmsg(config.db));
-    return 0;
+  if( ino == FUSE_ROOT_ID ){ /* It's the root directory itself */
+    s.st_ino = ino;
+    s.st_mode = S_IFDIR | 0500;
+    s.st_nlink = 1;
+    s.st_size = 0;
+    time_t now = time(NULL);
+    struct timespec mt = { .tv_sec = config.mounted_at, .tv_nsec = 0L },
+                    at = { .tv_sec = now              , .tv_nsec = 0L },
+	            ct = { .tv_sec = config.mounted_at, .tv_nsec = 0L };
+    s.st_mtim = mt;
+    s.st_atim = at;
+    s.st_ctim = ct;
+    D2("=> root dir");
+    return (void) fuse_reply_attr(req, &s, config.attr_timeout);
   }
 
-  while(1){
+  sqlite3_stmt *stmt = NULL;
+  if(sqlite3_prepare_v2(config.db, getattr_query, -1, &stmt, NULL) /* != SQLITE_OK */ ||
+     !stmt){
+    E("Preparing statement: %s | %s", getattr_query, sqlite3_errmsg(config.db));
+    return (void) fuse_reply_err(req, EIO);
+  }
+  
+  /* Bind arguments */
+  sqlite3_bind_int64(stmt, 1, ino);
+
+  if(config.debug > 2){ // DEBUG 3
+    char* expanded_sql = sqlite3_expanded_sql(stmt);
+    D3("expanded statement: %s", expanded_sql);
+    sqlite3_free(expanded_sql);
+  }
+
+  int rc = 0;
+
+  while(1){ /* Execute the query. */
+
+    s.st_ino = 0;
     rc = sqlite3_step(stmt);
-    if( rc == SQLITE_DONE)
+    if(rc == SQLITE_DONE)
       break;
 
-    if( rc == SQLITE_ROW){
-      content_len = sqlite3_column_int(stmt, 0);
-      break; // only one
+    if(rc == SQLITE_ROW){
+
+      // ctime: 0, mtime: 1, num_files : 2 , size: 3, is_dir: 4
+      time_t ctime = (time_t)sqlite3_column_int(stmt, 0);
+      time_t mtime = (time_t)sqlite3_column_int(stmt, 1);
+      s.st_nlink = (nlink_t)(uint32_t)sqlite3_column_int(stmt, 2);
+      s.st_size = (uint64_t)sqlite3_column_int(stmt, 3);
+      
+      if(sqlite3_column_int(stmt, 4)) // is_dir
+	s.st_mode = S_IFDIR | 0500;
+      else 
+	s.st_mode = S_IFREG | 0400;
+      
+      time_t now = time(NULL);
+      struct timespec mt = { .tv_sec = mtime, .tv_nsec = 0L },
+                      at = { .tv_sec = now  , .tv_nsec = 0L },
+                      ct = { .tv_sec = ctime, .tv_nsec = 0L };
+      s.st_mtim = mt;
+      s.st_atim = at;
+      s.st_ctim = ct;
+      // success
+      s.st_ino = ino;
+      break;
     }
-    D3("Error content len: %d", rc);
   }
 
   sqlite3_finalize(stmt);
-  return content_len;
+
+  if(s.st_ino)
+    fuse_reply_attr(req, &s, config.attr_timeout);
+  else
+    fuse_reply_err(req, ENOENT);
 }
 
-static inline void
-sqlitefs_read_content(fuse_req_t req, struct buffer *b, size_t size, off_t offset)
+
+static void
+crypt4gh_sqlite_lookup(fuse_req_t req, fuse_ino_t inode_p, const char *name)
+__attribute__((nonnull(3)))
 {
-  D1("READ content | offset: %zu | size: %zu | content len: %zu", offset, size, content_len);
+  D1("LOOKUP [%lu]/%s", inode_p, name);
 
-  if(offset > b->len){
-    offset = 0;
-    size = 0;
+  struct fuse_entry_param e;
+  memset(&e, 0, sizeof(e));
+  e.attr_timeout = config.attr_timeout;
+  e.entry_timeout = config.entry_timeout;
+
+  e.attr.st_uid = config.uid;
+  e.attr.st_gid = config.gid;
+  //e.attr.st_blksize = 512;     /* Block size for filesystem I/O */
+  //e.attr.st_blocks = 1;        /* Number of 512B blocks allocated */
+
+  sqlite3_stmt *stmt = NULL;
+  if( sqlite3_prepare_v2(config.db, lookup_query, -1, &stmt, NULL) /* != SQLITE_OK */ ||
+      !stmt){
+    E("Preparing statement: %s | %s", lookup_query, sqlite3_errmsg(config.db));
+    return (void) fuse_reply_err(req, EIO);
   }
-  if( (offset + size) > b->len ){
-    size = b->len - offset;
+  
+  /* Bind arguments */
+  sqlite3_bind_int64(stmt, 1, inode_p);
+  sqlite3_bind_text(stmt, 2, name, strlen(name), SQLITE_STATIC); /* fuse handles its lifetime */
+
+  if(config.debug > 2){ // DEBUG 3
+    char* expanded_sql = sqlite3_expanded_sql(stmt);
+    D3("expanded statement: %s", expanded_sql);
+    sqlite3_free(expanded_sql);
   }
 
-  D2("=> offset: %zu | size: %zu", offset, size);
+  int rc, loop_count = 10;
+  time_t now = time(NULL);
+  struct timespec mt = { .tv_sec = 0   , .tv_nsec = 0L },
+                  at = { .tv_sec = now , .tv_nsec = 0L },
+                  ct = { .tv_sec = 0   , .tv_nsec = 0L };
+  e.attr.st_atim = at;
+  
+  while(loop_count--){ /* Execute the query. */
 
-  struct fuse_bufvec buf = FUSE_BUFVEC_INIT(size);
-  buf.buf[0].mem = b->data + offset; /* reusing the memory, no need to alloc+copy to a separate buffer */
-  buf.buf[0].pos = 0;
-  fuse_reply_data(req, &buf, FUSE_BUF_SPLICE_MOVE);
+    e.ino = 0;
+    rc = sqlite3_step(stmt);
+    if(rc == SQLITE_DONE)
+      break;
+
+    if(rc == SQLITE_ROW){
+      // inode: 0, ctime: 1, mtime: 2, num_files : 3 , size: 4, is_dir: 5
+      e.ino = (fuse_ino_t)sqlite3_column_int64(stmt, 0); // success
+      e.attr.st_ino = e.ino;
+      ct.tv_sec = (time_t)sqlite3_column_int64(stmt, 1);
+      mt.tv_sec = (time_t)sqlite3_column_int64(stmt, 2);
+      e.attr.st_mtim = mt;
+      e.attr.st_ctim = ct;
+      e.attr.st_nlink = (nlink_t)(uint32_t)sqlite3_column_int(stmt, 3);
+
+      e.attr.st_size = (uint64_t)sqlite3_column_int64(stmt, 4);
+
+      if(sqlite3_column_int(stmt, 5)) // is_dir
+	e.attr.st_mode = S_IFDIR | 0500;
+      else 
+	e.attr.st_mode = S_IFREG | 0400;
+      break;
+    }
+
+    D1("(%d) lookup: [%d] %s", loop_count, rc, sqlite3_errmsg(config.db));
+  }
+
+  sqlite3_finalize(stmt);
+
+  if(e.ino){
+    fuse_reply_entry(req, &e);
+  } else
+    fuse_reply_err(req, ENOENT);
 }
 
-static inline void
-sqlitefs_open_content(fuse_req_t req, struct fuse_file_info *fi)
+/* ============ 
+
+   Directories
+
+   When opening the dir, we make _one_ call to the database,
+   getting all the listing (passing limit NULL),
+   and we save the PG results struct.
+   When doing a readdir, we fill up the given buffer with rows for the PG result and shift the offset.
+   Finally, on release, we clean the PG result struct.
+
+   We use readdir_plus, because we can then pass the entire struct stat instead of just { .ino, .st_mode}
+   (only using the bits 12-15, ie reg file or directory). That latter would cause a getattr for each entry.
+
+   ============ */
+
+static void
+crypt4gh_sqlite_opendir(fuse_req_t req, fuse_ino_t ino,
+		 struct fuse_file_info *fi)
 {
-    sqlite3_stmt *stmt = NULL;
-    D1("content statement: %s", QUERY_C4GH(content_query));
-    if( sqlite3_prepare_v2(config.db, QUERY_C4GH(content_query), -1, &stmt, NULL) /* != SQLITE_OK */ ||
-	!stmt){
-      E("Preparing content statement: %s | %s", QUERY_C4GH(content_query), sqlite3_errmsg(config.db));
-      return (void) fuse_reply_err(req, EIO);
+  D1("OPENDIR %lu", ino);
+
+  sqlite3_stmt *stmt = NULL; 
+  if( sqlite3_prepare_v3(config.db, readdir_query, -1, SQLITE_PREPARE_PERSISTENT, /* will be reused by readdir_plus */
+			 &stmt, NULL) /* != SQLITE_OK */ ||
+      !stmt){
+    E("Preparing statement: %s | %s", readdir_query, sqlite3_errmsg(config.db));
+    return (void) fuse_reply_err(req, EIO);
+  }
+
+  fi->fh = (uint64_t)stmt;
+  fi->cache_readdir = 1;
+  D3("stmt: %s", sqlite3_sql(stmt)); /* sqlite3_finalize will free it */
+  fuse_reply_open(req, fi);
+}
+
+static void
+crypt4gh_sqlite_releasedir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
+{
+  D1("RELEASEDIR %lu", ino);
+
+  sqlite3_stmt *stmt = (sqlite3_stmt *)fi->fh;
+  if(stmt) sqlite3_finalize(stmt);
+  
+  fuse_reply_err(req, errno);
+}
+
+
+static void
+crypt4gh_sqlite_readdir_plus(fuse_req_t req, fuse_ino_t ino, size_t size,
+		      off_t offset, struct fuse_file_info *fi)
+{
+  D1("READDIR+ %lu | offset: %lu | size: %zu", ino, offset, size);
+  int err = 1;
+
+  sqlite3_stmt *stmt = (sqlite3_stmt *)fi->fh;
+  if (!stmt)
+    return (void) fuse_reply_err(req, EIO);
+
+  D3("Allocating buffer of size: %zu", size);
+  char *buf = calloc(1, size);
+  if (!buf)
+    return (void) fuse_reply_err(req, ENOMEM);
+
+  /* Bind arguments */
+  sqlite3_bind_int64(stmt, 1, ino);
+  sqlite3_bind_int64(stmt, 2, offset);
+  sqlite3_bind_int(stmt, 3, DEFAULT_READDIR_LIMIT);
+
+  if(config.debug > 2){ // DEBUG 3
+    char* expanded_sql = sqlite3_expanded_sql(stmt);
+    D3("expanded statement: %s", expanded_sql);
+    sqlite3_free(expanded_sql);
+  }
+
+  char *p;
+  size_t remainder = size;
+  size_t entsize = 0;
+  unsigned int count = 0, loop_max_errors = 100;
+
+  p = buf;
+
+  struct fuse_entry_param e;
+  memset(&e, 0, sizeof(e));
+  e.attr_timeout = config.attr_timeout;
+  e.entry_timeout = config.entry_timeout;
+
+  time_t ctime, mtime; /* 8 bytes */
+  time_t now = time(NULL);
+  struct timespec mt = { .tv_sec = 0, .tv_nsec = 0L },
+                  at = { .tv_sec = now, .tv_nsec = 0L },
+                  ct = { .tv_sec = 0, .tv_nsec = 0L };
+
+  e.attr.st_uid = config.uid;
+  e.attr.st_gid = config.gid;
+
+  /* Handle the '.' and '..' di*/
+  if(!config.show_dotdot || offset >= 2)
+    goto content;
+
+  e.attr.st_mtim = mt;
+  e.attr.st_ctim = ct;
+  e.attr.st_atim = at;
+  e.attr.st_nlink = 1;
+  e.attr.st_size = 0;
+  e.attr.st_mode = S_IFDIR | 0500;
+
+  if(offset < 1){
+    e.ino = 2;
+    e.attr.st_ino = e.ino;
+    e.attr.st_uid = 0;
+    e.attr.st_gid = 0;
+    D3(" - [%lu]/..", ino);
+    entsize = fuse_add_direntry_plus(req, p, remainder, "..", &e, ++offset);
+    if (entsize > remainder) { /* Not added to the buffer, no space */
+      goto skip; /* buffer full, not an error */
     }
-
-    struct buffer *buffer = malloc(sizeof(struct buffer));
-    size_t size = get_content_len();
-    char *p = malloc(size /* * sizeof(char) */);
-
-    if(!buffer || !p){
-      sqlite3_finalize(stmt);
-      if(buffer) free(buffer);
-      if(p) free(p);
-      return (void) fuse_reply_err(req, ENOMEM);
-    }
-
-    buffer->data = p;
-    buffer->len = size;
-
-    char* row = NULL;
-    size_t row_len = 0;
-    while(sqlite3_step(stmt) == SQLITE_ROW){
-      row = (char*)sqlite3_column_text(stmt, 0);
-      row_len = (size_t)sqlite3_column_bytes(stmt, 0);
-      if(row && row_len > 0){
-	memcpy(p, row, row_len);
-	p += row_len;
-	*p = '\n';
-	p++;
-      }
-    }
-
-    sqlite3_finalize(stmt);
+    p += entsize;
+    remainder -= entsize;
+    /* reset */
+    e.attr.st_uid = config.uid;
+    e.attr.st_gid = config.gid;
+  }
     
-    fi->fh = (uint64_t)buffer;
-    if (config.file_cache)
-      fi->keep_cache = 1;
-    fi->direct_io = 0; // disable
-    fi->noflush = 1;
-    return (void) fuse_reply_open(req, fi);
+  if(offset < 2){
+    e.ino = ino;
+    e.attr.st_ino = e.ino;
+    D3(" - [%lu]/.", ino);
+    entsize = fuse_add_direntry_plus(req, p, remainder, ".", &e, ++offset);
+    if (entsize > remainder) { /* Not added to the buffer, no space */
+      goto skip; /* buffer full, not an error */
+    }
+    p += entsize;
+    remainder -= entsize;
+  }
+
+content:
+
+  while( 1 ){
+
+    err = sqlite3_step(stmt);
+    if(err == SQLITE_DONE)
+      break;
+
+    if(err == SQLITE_ROW){
+      // ino int8, display_name text, ctime int, mtime int, nlink int, decrypted_size int64, is_dir int
+      e.ino = (fuse_ino_t)sqlite3_column_int64(stmt, 0);
+      e.attr.st_ino = e.ino;
+
+      ct.tv_sec = (time_t)sqlite3_column_int(stmt, 2);
+      mt.tv_sec = (time_t)sqlite3_column_int(stmt, 3);
+      e.attr.st_mtim = mt;
+      e.attr.st_ctim = ct;
+      e.attr.st_nlink = (nlink_t)(uint32_t)sqlite3_column_int(stmt, 4);
+      e.attr.st_size = (uint64_t)sqlite3_column_int64(stmt, 5);
+    
+      if(sqlite3_column_int(stmt, 6)) // is_dir
+	e.attr.st_mode = S_IFDIR | 0500;
+      else 
+	e.attr.st_mode = S_IFREG | 0400;
+      
+      /* add the entry to the buffer and check size */
+      char* pe = (char*)sqlite3_column_text(stmt, 1);
+      D3(" - [%lu]/%s", ino, pe);
+      entsize = fuse_add_direntry_plus(req, p, remainder, pe, &e, ++offset); /* next offset */
+
+      D3("entsize: %zu | remainder: %zu | size: %zu", entsize, remainder, size);
+      if (entsize > remainder) { /* Not added to the buffer, no space */
+	break; /* buffer full, not an error */
+      }
+      p += entsize;
+      remainder -= entsize;
+      count++;
+      continue; /* next row */
+    }
+    
+    if(loop_max_errors-- == 0) break;
+    D1("(%u) readdir: [%d] %s", loop_max_errors, err, sqlite3_errmsg(config.db));
+  }
+  err = 0;
+  D3("Processed %u entries", count);
+
+skip:
+
+  sqlite3_reset(stmt);
+
+  if (err && remainder == size){
+    E("----------------------- There is an error: %d | remainder: %zu | errno: %d", err, remainder, errno);
+    fuse_reply_err(req, (errno)?errno:ENOENT);
+  } else {
+    fuse_reply_buf(req, buf, size - remainder);
+  }
+  free(buf);
 }
 
+/* ============ 
+
+   Opening a Crypt4GH file
+
+   We get the header from the database while opening the file.
+   We prepend the header in its own buffer, if the offset is 0.
+   Else we send the payload (no need to shift, expect in the first call).
+
+   If decryption is enabled, we decrypt the header on the first read.
+   We copy the ciphersegment into a buf and decrypt it.
+
+   ============ */
 
 struct fs_file {
 
   int fd;
+
+  uint64_t payload_size; /* decrypted size */
+
+  /* prepend data */
+  uint8_t *prepend;
+  uint64_t prepend_size;
+
+  /* append data */
+  uint8_t *append;
+  uint64_t append_size;
 
   /* header */
   uint8_t *header;
@@ -228,418 +445,120 @@ struct fs_file {
   size_t  ciphersegment_len;
 
   pthread_mutex_t lock;
+  
 };
 
 static inline void
 fs_file_free(struct fs_file *f)
 {
   if(!f) return;
+  if(f->fd > 0) close(f->fd);
+  if(f->prepend > 0) free(f->prepend);
+  if(f->append > 0) free(f->append);
   if(f->header) free(f->header);
   if(f->session_keys) free(f->session_keys);
   if(f->edit_list) free(f->edit_list);
   free(f);
 }
 
-
-static void
-sqlitefs_getattr(fuse_req_t req, fuse_ino_t ino,
-		 struct fuse_file_info *fi)
+static int
+do_open(struct fs_file *fh,
+	const char* filepath, int flags,
+	const uint8_t *header, unsigned int header_size,
+	const uint8_t *prepend, uint64_t prepend_size,
+	const uint8_t *append, uint64_t append_size)
 {
-  D1("GETATTR %lu", ino);
-
-  struct stat s;
-  memset(&s, 0, sizeof(struct stat));
-
-  s.st_uid = config.uid;
-  s.st_gid = config.gid;
-  //s.st_blksize = 512;     /* Block size for filesystem I/O */
-  //s.st_blocks = 1;        /* Number of 512B blocks allocated */
-
-  if( ino == FUSE_ROOT_ID ){ /* It's the root directory itself */
-    s.st_ino = ino;
-    s.st_mode = S_IFDIR | 0500;
-    s.st_nlink = 1;
-    s.st_size = 0;
-    time_t now = time(NULL);
-    struct timespec mt = { .tv_sec = config.mounted_at, .tv_nsec = 0L },
-                    at = { .tv_sec = now              , .tv_nsec = 0L },
-	            ct = { .tv_sec = config.mounted_at, .tv_nsec = 0L };
-    s.st_mtim = mt;
-    s.st_atim = at;
-    s.st_ctim = ct;
-    D2("=> root dir");
-    return (void) fuse_reply_attr(req, &s, config.attr_timeout);
-  }
-
-  if( ino == FUSE_CONTENT_ID ){ /* It's the content file */
-    s.st_ino = ino;
-    s.st_mode = S_IFREG | 0400;
-    s.st_nlink = 1;
-    s.st_size = get_content_len();
-    time_t now = time(NULL); // TODO: get the sqlite timespec
-    struct timespec mt = { .tv_sec = config.mounted_at, .tv_nsec = 0L },
-                    at = { .tv_sec = now              , .tv_nsec = 0L },
-	            ct = { .tv_sec = config.mounted_at, .tv_nsec = 0L };
-    s.st_mtim = mt;
-    s.st_atim = at;
-    s.st_ctim = ct;
-    D2("=> content file");
-    return (void) fuse_reply_attr(req, &s, config.attr_timeout);
-  }
-
-  sqlite3_stmt *stmt = NULL;
-  if(sqlite3_prepare_v2(config.db, getattr_query, -1, &stmt, NULL) /* != SQLITE_OK */ ||
-     !stmt){
-    E("Preparing statement: %s | %s", getattr_query, sqlite3_errmsg(config.db));
-    return (void) fuse_reply_err(req, EIO);
-  }
-  
-  /* Bind arguments */
-  sqlite3_bind_int64(stmt, 1, ino);
-
   int rc = 0;
-  char* expanded_sql = sqlite3_expanded_sql(stmt);
-  D3("expanded statement: %s", expanded_sql);
-  sqlite3_free(expanded_sql);
 
-  while(1){ /* Execute the query. */
-
-    s.st_ino = 0;
-    rc = sqlite3_step(stmt);
-    if(rc == SQLITE_DONE)
-      break;
-
-    if(rc == SQLITE_ROW){
-
-      // ctime: 0, mtime: 1, num_files : 2 , size: 3, decrypted_size:4, is_dir: 5
-      time_t ctime = (time_t)sqlite3_column_int(stmt, 0);
-      time_t mtime = (time_t)sqlite3_column_int(stmt, 1);
-      s.st_nlink = (nlink_t)(uint32_t)sqlite3_column_int(stmt, 2);
-
-      s.st_size = (uint64_t)sqlite3_column_int(stmt, (config.c4gh_decrypt)?4:3);
-      
-      if(sqlite3_column_int(stmt, 5)) // is_dir
-	s.st_mode = S_IFDIR | 0500;
-      else 
-	s.st_mode = S_IFREG | 0400;
-      
-      time_t now = time(NULL);
-      struct timespec mt = { .tv_sec = mtime, .tv_nsec = 0L },
-                      at = { .tv_sec = now  , .tv_nsec = 0L },
-                      ct = { .tv_sec = ctime, .tv_nsec = 0L };
-      s.st_mtim = mt;
-      s.st_atim = at;
-      s.st_ctim = ct;
-      // success
-      s.st_ino = ino;
-      break;
-    }
-  }
-
-  sqlite3_finalize(stmt);
-
-  if(s.st_ino)
-    fuse_reply_attr(req, &s, config.attr_timeout);
-  else
-    fuse_reply_err(req, ENOENT);
-}
-
-
-static void
-sqlitefs_lookup(fuse_req_t req, fuse_ino_t inode_p, const char *name)
-__attribute__((nonnull(3)))
-{
-  D1("LOOKUP [%lu]/%s", inode_p, name);
-
-  struct fuse_entry_param e;
-  memset(&e, 0, sizeof(e));
-  e.attr_timeout = config.attr_timeout;
-  e.entry_timeout = config.entry_timeout;
-
-  e.attr.st_uid = config.uid;
-  e.attr.st_gid = config.gid;
-  //e.attr.st_blksize = 512;     /* Block size for filesystem I/O */
-  //e.attr.st_blocks = 1;        /* Number of 512B blocks allocated */
-
-  if( inode_p == FUSE_ROOT_ID && strncmp(name, config.content_filename, config.content_filename_len) == 0){ /* It's the content file */
-    e.ino = FUSE_CONTENT_ID;
-    e.attr.st_ino = FUSE_CONTENT_ID;
-    e.attr.st_mode = S_IFREG | 0400;
-    e.attr.st_nlink = 1;
-    e.attr.st_size = get_content_len();
-    time_t now = time(NULL); // TODO: get the sqlite timespec
-    struct timespec mt = { .tv_sec = config.mounted_at, .tv_nsec = 0L },
-                    at = { .tv_sec = now              , .tv_nsec = 0L },
-	            ct = { .tv_sec = config.mounted_at, .tv_nsec = 0L };
-    e.attr.st_mtim = mt;
-    e.attr.st_atim = at;
-    e.attr.st_ctim = ct;
-    return (void) fuse_reply_entry(req, &e);
-  }
-
-
-  sqlite3_stmt *stmt = NULL;
-  if( sqlite3_prepare_v2(config.db, QUERY_C4GH(lookup_query), -1, &stmt, NULL) /* != SQLITE_OK */ ||
-      !stmt){
-    E("Preparing statement: %s | %s", QUERY_C4GH(lookup_query), sqlite3_errmsg(config.db));
-    return (void) fuse_reply_err(req, EIO);
-  }
-  
-  /* Bind arguments */
-  sqlite3_bind_int64(stmt, 1, inode_p);
-  sqlite3_bind_text(stmt, 2, name, strlen(name), SQLITE_STATIC); /* fuse handles its lifetime */
-
-  char* expanded_sql = sqlite3_expanded_sql(stmt);
-  D3("expanded statement: %s", expanded_sql);
-
-  int rc = 0;
-  time_t now = time(NULL);
-  struct timespec mt = { .tv_sec = 0   , .tv_nsec = 0L },
-                  at = { .tv_sec = now , .tv_nsec = 0L },
-                  ct = { .tv_sec = 0   , .tv_nsec = 0L };
-  e.attr.st_atim = at;
-  
-  while(1){ /* Execute the query. */
-
-    e.ino = 0;
-    rc = sqlite3_step(stmt);
-    if(rc == SQLITE_DONE)
-      break;
-
-    if(rc == SQLITE_ROW){
-      // inode: 0, ctime: 1, mtime: 2, num_files : 3 , size: 4, decrypted_size:5, is_dir: 6
-      e.ino = (fuse_ino_t)sqlite3_column_int64(stmt, 0); // success
-      e.attr.st_ino = e.ino;
-      ct.tv_sec = (time_t)sqlite3_column_int64(stmt, 1);
-      mt.tv_sec = (time_t)sqlite3_column_int64(stmt, 2);
-      e.attr.st_mtim = mt;
-      e.attr.st_ctim = ct;
-      e.attr.st_nlink = (nlink_t)(uint32_t)sqlite3_column_int(stmt, 3);
-
-      e.attr.st_size = (uint64_t)sqlite3_column_int64(stmt, (config.c4gh_decrypt)?5:4);
-
-      if(sqlite3_column_int(stmt, 6)) // is_dir
-	e.attr.st_mode = S_IFDIR | 0500;
-      else 
-	e.attr.st_mode = S_IFREG | 0400;
-      break;
+  /* File settings */
+  if(filepath != NULL && fh->payload_size > 0){
+    D2("opening %s | flags=%d", filepath, flags);
+    fh->fd = open(filepath, flags);
+    if (fh->fd == -1){
+      rc = 2;
+      goto bailout;
     }
 
-    D1("looping the lookup: [%d] %s", rc, sqlite3_errmsg(config.db));
-  }
+    /* Crypt4GH settings */
+    if(header != NULL && header_size > 0){
 
-  sqlite3_finalize(stmt);
-  sqlite3_free(expanded_sql);
+      D3("We have a header | size=%lu", header_size);
 
-  if(e.ino){
-    fuse_reply_entry(req, &e);
-  } else
-    fuse_reply_err(req, ENOENT);
-}
-
-/* ============ 
-
-   Directories
-
-   When opening the dir, we make _one_ call to the database,
-   getting all the listing (passing limit NULL),
-   and we save the PG results struct.
-   When doing a readdir, we fill up the given buffer with rows for the PG result and shift the offset.
-   Finally, on release, we clean the PG result struct.
-
-   We use readdir_plus, because we can then pass the entire struct stat instead of just { .ino, .st_mode}
-   (only using the bits 12-15, ie reg file or directory). That latter would cause a getattr for each entry.
-
-   ============ */
-
-static void
-sqlitefs_opendir(fuse_req_t req, fuse_ino_t ino,
-		 struct fuse_file_info *fi)
-{
-  D1("OPENDIR %lu", ino);
-
-  sqlite3_stmt *stmt = NULL; 
-  if( sqlite3_prepare_v3(config.db, QUERY_C4GH(readdir_query), -1, SQLITE_PREPARE_PERSISTENT, /* will be reused by readdir_plus */
-			 &stmt, NULL) /* != SQLITE_OK */ ||
-      !stmt){
-    E("Preparing statement: %s | %s", QUERY_C4GH(readdir_query), sqlite3_errmsg(config.db));
-    return (void) fuse_reply_err(req, EIO);
-  }
-
-  fi->fh = (uint64_t)stmt;
-  fi->cache_readdir = 1;
-  D3("stmt: %s", sqlite3_sql(stmt)); /* sqlite3_finalize will free it */
-  fuse_reply_open(req, fi);
-}
-
-static void
-sqlitefs_releasedir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
-{
-  D1("RELEASEDIR %lu", ino);
-
-  sqlite3_stmt *stmt = (sqlite3_stmt *)fi->fh;
-  if(stmt) sqlite3_finalize(stmt);
-  
-  fuse_reply_err(req, errno);
-}
-
-
-static void
-sqlitefs_readdir_plus(fuse_req_t req, fuse_ino_t ino, size_t size,
-		      off_t offset, struct fuse_file_info *fi)
-{
-  D1("READDIR+ %lu | offset: %lu | size: %zu", ino, offset, size);
-  int err = 1;
-
-  sqlite3_stmt *stmt = (sqlite3_stmt *)fi->fh;
-  if (!stmt)
-    return (void) fuse_reply_err(req, EIO);
-
-  D3("Allocating buffer of size: %zu", size);
-  char *buf = calloc(1, size);
-  if (!buf)
-    return (void) fuse_reply_err(req, ENOMEM);
-
-  /* Bind arguments */
-  sqlite3_bind_int64(stmt, 1, ino);
-  sqlite3_bind_int64(stmt, 2, offset);
-  sqlite3_bind_int(stmt, 3, DEFAULT_READDIR_LIMIT);
-
-  char* expanded_sql = sqlite3_expanded_sql(stmt);
-  D3("expanded statement: %s", expanded_sql);
-
-  char *p;
-  size_t remainder = size;
-  size_t entsize = 0;
-  unsigned int count = 0;
-
-  p = buf;
-
-  struct fuse_entry_param e;
-  memset(&e, 0, sizeof(e));
-  e.attr_timeout = config.attr_timeout;
-  e.entry_timeout = config.entry_timeout;
-
-  time_t ctime, mtime; /* 8 bytes */
-  time_t now = time(NULL);
-  struct timespec mt = { .tv_sec = 0, .tv_nsec = 0L },
-                  at = { .tv_sec = now, .tv_nsec = 0L },
-                  ct = { .tv_sec = 0, .tv_nsec = 0L };
-
-  e.attr.st_uid = config.uid;
-  e.attr.st_gid = config.gid;
-  e.attr.st_atim = at;
-
-  if(ino == FUSE_ROOT_ID && offset == 0){ /* We add the content file */
-
-    D3(" - [%lu]/%s", ino, config.content_filename);
-
-    e.ino = (fuse_ino_t)FUSE_CONTENT_ID;
-    e.attr.st_ino = e.ino;
-    ct.tv_sec = now;
-    mt.tv_sec = now;
-    e.attr.st_mtim = mt;
-    e.attr.st_ctim = ct;
-    e.attr.st_nlink = 1;
-    e.attr.st_size = get_content_len();
-    e.attr.st_mode = S_IFREG | 0400;
-
-    /* add the entry to the buffer and check size */
-    entsize = fuse_add_direntry_plus(req, p, remainder, config.content_filename, &e, FUSE_CONTENT_ID); /* next offset */
-    if (entsize > remainder) { /* Not added to the buffer, no space */
-      goto skip; /* buffer full, not an error */
-    }
-    p += entsize;
-    remainder -= entsize;
-    //offset++;
-  }
-
-
-  while( 1 ){
-
-    err = sqlite3_step(stmt);
-    if(err == SQLITE_DONE)
-      break;
-
-    if(err == SQLITE_ROW){
-      // ino int8, display_name text, ctime int, mtime int, nlink int, size int64, decrypted_size int64, is_dir int
-      e.ino = (fuse_ino_t)sqlite3_column_int64(stmt, 0);
-      e.attr.st_ino = e.ino;
-
-      ct.tv_sec = (time_t)sqlite3_column_int(stmt, 2);
-      mt.tv_sec = (time_t)sqlite3_column_int(stmt, 3);
-      e.attr.st_mtim = mt;
-      e.attr.st_ctim = ct;
-      e.attr.st_nlink = (nlink_t)(uint32_t)sqlite3_column_int(stmt, 4);
-
-      e.attr.st_size = (uint64_t)sqlite3_column_int64(stmt, (config.c4gh_decrypt)?6:5);
-      D3("got size: %zu", e.attr.st_size);
-    
-      if(sqlite3_column_int(stmt, 7)) // is_dir
-	e.attr.st_mode = S_IFDIR | 0500;
-      else 
-	e.attr.st_mode = S_IFREG | 0400;
-      
-      /* add the entry to the buffer and check size */
-      char* pe = (char*)sqlite3_column_text(stmt, 1);
-      D3(" - [%lu]/%s", ino, pe);
-      entsize = fuse_add_direntry_plus(req, p, remainder, pe, &e, ++offset); /* next offset */
-
-      D3("entsize: %zu | remainder: %zu | size: %zu", entsize, remainder, size);
-      if (entsize > remainder) { /* Not added to the buffer, no space */
-	break; /* buffer full, not an error */
+      fh->header = calloc(header_size, sizeof(uint8_t));
+      if (fh->header == NULL){
+	rc = 3;
+	goto bailout;
       }
-      p += entsize;
-      remainder -= entsize;
-      count++;
-      continue; /* next row */
+
+      fh->header_size = header_size;
+      memcpy(fh->header, header, header_size);
     }
 
-    D1("looping the readdir: [%d] %s", err, sqlite3_errmsg(config.db));
+  } /* else {
+    fh->fd = 0;
+    fh->header_size = 0;
+    fh->header = NULL;
+  } */
+
+
+  /* prepare prepend file */
+  if(prepend != NULL && prepend_size > 0){
+
+    D3("We have prepended data | size=%lu", prepend_size);
+
+    fh->prepend = calloc(prepend_size, sizeof(uint8_t));
+    if (fh->prepend == NULL){
+      rc = 4;
+      goto bailout;
+    }
+    fh->prepend_size = prepend_size;
+    memcpy(fh->prepend, prepend, prepend_size);
   }
-  err = 0;
-  D3("Processed %u entries", count);
 
-skip:
+  /* prepare append file */
+  if(append != NULL && append_size > 0){
 
-  sqlite3_reset(stmt);
+    D3("We have appended data | size=%lu", append_size);
 
-  if (err && remainder == size){
-    E("----------------------- There is an error: %d | remainder: %zu | errno: %d", err, remainder, errno);
-    fuse_reply_err(req, (errno)?errno:ENOENT);
-  } else {
-    fuse_reply_buf(req, buf, size - remainder);
+    fh->append = calloc(append_size, sizeof(uint8_t));
+    if (fh->append == NULL){
+      rc = 5;
+      goto bailout;
+    }
+    fh->append_size = append_size;
+    memcpy(fh->append, append, append_size);
   }
-  free(buf);
-  sqlite3_free(expanded_sql);
+
+  return 0;
+
+bailout:
+
+  /* Cleanup in case of errors */
+  if(fh->fd > 0) close(fh->fd);
+  fh->payload_size = 0;
+
+  if(fh->header) free(fh->header);
+  fh->header_size = 0;
+
+  if(fh->prepend) free(fh->prepend);
+  fh->prepend = NULL;
+  fh->prepend_size = 0;
+
+  if(fh->append) free(fh->append);
+  fh->append = NULL;
+  fh->append_size = 0;
+
+  return rc;
 }
 
-/* ============ 
-
-   Opening a Crypt4GH file
-
-   We get the header from the database while opening the file.
-   We prepend the header in its own buffer, if the offset is 0.
-   Else we send the payload (no need to shift, expect in the first call).
-
-   If decryption is enabled, we decrypt the header on the first read.
-   We copy the ciphersegment into a buf and decrypt it.
-
-   ============ */
-
 static void
-sqlitefs_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
+crypt4gh_sqlite_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 {
 
   D1("OPEN %lu | flags=%d", ino, fi->flags);
   /* No write */
   if( fi->flags & O_RDWR || fi->flags & O_WRONLY)
     return (void)fuse_reply_err(req, EPERM);
-
-  if(ino == FUSE_CONTENT_ID)
-    return (void)sqlitefs_open_content(req, fi);
-
-  /* otherwise */
 
   struct fs_file *fh = calloc(1, sizeof(struct fs_file));
   if (fh == NULL)
@@ -650,6 +569,8 @@ sqlitefs_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
   if( sqlite3_prepare_v2(config.db, file_info_query, -1, &stmt, NULL) /* != SQLITE_OK */ ||
       !stmt){
     E("Preparing statement: %s | %s", file_info_query, sqlite3_errmsg(config.db));
+    if(stmt) sqlite3_finalize(stmt);
+    fs_file_free(fh);
     return (void) fuse_reply_err(req, EIO);
   }
 
@@ -665,37 +586,38 @@ sqlitefs_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
     if(err == SQLITE_ROW ){
       
       const char* filepath = sqlite3_column_text(stmt, 0);
+
       const uint8_t *header = sqlite3_column_blob(stmt, 1);
       unsigned int header_size = sqlite3_column_bytes(stmt, 1);
+
+      fh->payload_size = sqlite3_column_int64(stmt, 2);
+
+      const uint8_t *prepend = sqlite3_column_blob(stmt, 3);
+      uint64_t prepend_size = (uint64_t)sqlite3_column_bytes(stmt, 3);
+
+      const uint8_t *append = sqlite3_column_blob(stmt, 4);
+      uint64_t append_size = (uint64_t)sqlite3_column_bytes(stmt, 4);
     
-      D2("filepath     : %s", filepath);
-      D2("header_size  : %u", header_size);
+      D2("filepath    : %s", filepath);
+      D2("header_size : %u", header_size);
+      D2("payload_size: %lu", fh->payload_size);
+      D2("prepend_size: %lu", prepend_size);
+      D2("append_size : %lu", append_size);
 
-      if (!filepath || !header || header_size == 0){
-	errno = EPERM;
-	err = 1;
-	break;
-      }
+      err = do_open(fh,
+		    filepath, fi->flags & ~O_NOFOLLOW,
+		    header, header_size,
+		    prepend, prepend_size,
+		    append, append_size);
 
-      int fd = open(filepath, fi->flags & ~O_NOFOLLOW);
-      if (fd == -1){
-	errno = ENOENT;
-	err = 2;
-	break;
-      }
-      
-      fh->fd = fd;
-      fh->header_size = header_size;
-      fh->header = calloc(header_size, sizeof(uint8_t));
-      if (fh->header == NULL){
-	errno = ENOMEM;
-	err = 3;
-	break;
-      }
-      memcpy(fh->header, header, header_size);
+#if 0
+      if(fh->header_size > 4)
+	D2("header: %02x%02x%02x%02x", fh->header[0], fh->header[1], fh->header[2], fh->header[3]);
 
-      // success
-      err = 0;
+      if(fh->prepend_size > 4)
+	D2("prepend: %02x%02x%02x%02x", fh->prepend[0], fh->prepend[1], fh->prepend[2], fh->prepend[3]);
+#endif
+
       break;
     }
 
@@ -705,15 +627,17 @@ sqlitefs_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
   sqlite3_finalize(stmt);
   
   if(err){
-    free(fh);
     int e = (errno)?errno:EPERM;
     E("Error opening the file %lu: [%d] %s", ino, err, strerror(e));
+    fs_file_free(fh); // done by release ?
     return (void) fuse_reply_err(req, e);
   }
 
   fi->fh = (uint64_t)fh;
 
-  fi->noflush = 1;
+#if FUSE_VERSION >= 311 
+  fi->noflush = 1; /* from 3.11 */
+#endif
 
   if (config.file_cache)
     fi->keep_cache = 1; /* don't flush the kernel cache */
@@ -721,100 +645,192 @@ sqlitefs_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
   if (config.direct_io)
     fi->direct_io = 1;
 
-  if(config.c4gh_decrypt){
-    if(!config.singlethread)
-      pthread_mutex_init(&fh->lock, NULL);
-    fh->segment_len = -1;
-  }
+  if(!config.singlethread)
+    pthread_mutex_init(&fh->lock, NULL);
 
   fuse_reply_open(req, fi);
 }
 
 
 static void
-sqlitefs_release(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
+crypt4gh_sqlite_release(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 {
-  if(ino == FUSE_CONTENT_ID){
-    struct buffer *b = (struct buffer *)fi->fh;
-    if(b){
-      if(b->data) free(b->data);
-      free(b);
-    }
-    return (void) fuse_reply_err(req, 0);
-  }
-  
-  D1("release inode %lu", ino);
-  struct fs_file *fh = (struct fs_file *)fi->fh;
-  if(fh){
-    if(fh->fd > 0) close(fh->fd);
-    if(fh->header) free(fh->header);
-    free(fh);
-  }
+  D1("RELEASE inode %lu", ino);
+  fs_file_free((struct fs_file *)fi->fh);
   fuse_reply_err(req, 0);
 }
 
 
-/* static allocation instead of one extra dynamic fuse_buf with malloc(sizeof(struct fuse_bufvec) + sizeof(struct fuse_buf)) */
-struct fuse_bufvec2 {
+/* static allocation instead of one extra dynamic fuse_buf with malloc(sizeof(struct fuse_bufvec) + 2 * sizeof(struct fuse_buf)) */
+struct fuse_bufvec3 {
   size_t count;
   size_t idx;
   size_t off;
-  struct fuse_buf buf[2];
+  struct fuse_buf buf[3];
 };
 
+static int c4gh_read(off_t offset, size_t size, struct fs_file *fh, char* b);
+
 static void
-sqlitefs_read(fuse_req_t req, fuse_ino_t ino, size_t size,
-	      off_t offset, struct fuse_file_info *fi)
+crypt4gh_sqlite_read(fuse_req_t req, fuse_ino_t ino, size_t size,
+	 off_t offset, struct fuse_file_info *fi)
 {
-  
-  if(ino == FUSE_CONTENT_ID)
-    return (void) sqlitefs_read_content(req, (struct buffer *)fi->fh, size, offset);
-
-  D1("READ %lu | offset: %zu | size: %zu", ino, offset, size);
+  D1("READ ino:%lu | offset: %zu | size: %zu", ino, offset, size);
   struct fs_file *fh = (struct fs_file *)fi->fh;
-  if (offset < fh->header_size){
 
-    if ( offset + size < fh->header_size ){
-      /* Not asking for much data */
-      struct fuse_bufvec buf = FUSE_BUFVEC_INIT(size);
-      buf.buf[0].mem = fh->header + offset;
-      buf.buf[0].pos = 0;
-      fuse_reply_data(req, &buf, FUSE_BUF_SPLICE_MOVE);
+  /*     0  prepend           payload           append    
+   *     |===========|=======================|==========|
+   *              |---------------|
+   *             offset         offset+size
+   *  Cases:
+   *      A)  |----|
+   *      B)  |-----------|
+   *      C)  |----------------------------------| (for small files)
+   *      D)              |----------|
+   *      E)                          |---------------|
+   *      F)                                      |---|
+   */
 
-    } else {
-      /* Asking for the header _and_ some more data */
-      struct fuse_bufvec2 buf = {
-	.count = 2,
-	.idx = 0,
-	.off = 0,
-	.buf = {
-	  { .size = fh->header_size - offset,
-	    .flags = 0,
-	    .mem = fh->header + offset,
-	    .fd = -1,
-	    .pos = 0,
-	  },
-	  { .size = size - (fh->header_size - offset),
-	    .flags = FUSE_BUF_IS_FD | FUSE_BUF_FD_SEEK, /* we don't use FUSE_BUF_FD_RETRY */
-	    .fd = fh->fd,
-	    .pos = 0,
-	  }
-	}
-      };
+  size_t limit = offset + size;
+  size_t append_offset = fh->prepend_size + fh->payload_size;
 
-      fuse_reply_data(req, (struct fuse_bufvec*)&buf, FUSE_BUF_SPLICE_MOVE);
+  struct fuse_buf *prepend_fbuf = NULL, *append_fbuf = NULL, *data_fbuf = NULL;
+  char *buf=NULL;
+  size_t prepend_len = 0;
+  size_t append_len = 0;
+  int err = 0;
+
+  /* Prepare prepend data */
+  if(fh->prepend != NULL && offset < fh->prepend_size) {
+
+    if(limit > fh->prepend_size)
+      prepend_len = (fh->prepend_size - offset);
+    else
+      prepend_len = size;
+
+    prepend_fbuf = (struct fuse_buf *)calloc(1, sizeof(struct fuse_buf));
+    if(!prepend_fbuf){ err = -ENOMEM; goto error; }
+    /* memset(prepend_fbuf, '\0', sizeof(struct fuse_buf)); */
+
+    prepend_fbuf->size = prepend_len;
+    //prepend_fbuf->flags = 0;
+    prepend_fbuf->mem = fh->prepend + offset;
+    //prepend_fbuf->pos = offset; // not used with .mem
+
+  }
+
+  /* Prepare append data */
+  if(fh->append != NULL && limit > append_offset) {
+
+    append_len = (limit - append_offset);
+    if ( size < append_len )
+      append_len = size;
+
+    append_fbuf = (struct fuse_buf *)calloc(1, sizeof(struct fuse_buf));
+    if(!append_fbuf){ err = -ENOMEM; goto error; }
+    /* memset(append_fbuf, '\0', sizeof(struct fuse_buf)); */
+
+    append_fbuf->size = append_len;
+    //append_fbuf->flags = 0;
+    append_fbuf->mem = fh->append + ((offset < append_offset) ? 0 : (offset - append_offset));
+    //append_fbuf->pos = ((offset < append_offset) ? 0 : (offset - append_offset)); // not used with .mem
+
+  }
+
+  D3("prepend_len: %zu | prepend size: %zu", prepend_len, fh->prepend_size);
+  D3("append_len: %zu | append size: %zu", append_len, fh->append_size);
+
+  /* Now the data */
+  if(limit > fh->prepend_size && offset < append_offset
+     && fh->payload_size > 0){
+
+    size_t data_offset = offset + prepend_len - fh->prepend_size;
+    size_t data_size = size - prepend_len - append_len;
+    if(data_size > fh->payload_size)
+      data_size = fh->payload_size;
+
+    D3("data offset: %zu", data_offset);
+    D3("data size: %zu", data_size);
+
+    data_fbuf = (struct fuse_buf *)calloc(1, sizeof(struct fuse_buf));
+    if(!data_fbuf){ err = -ENOMEM; goto error; }
+
+    if(fh->header){ // Try Crypt4GH data
+
+      buf = calloc(data_size, sizeof(char));
+      if(!buf){ err = -ENOMEM; goto error; }
+      
+      D3("encrypted data: offset %zu, size: %zu", data_offset, data_size);
+      err = c4gh_read(data_offset, data_size, fh, buf);
+      if(err < 0){ D1("c4gh_read error: %s", strerror(-err)); goto error; }
+      
+      data_fbuf->size = data_size;
+      //data_fbuf->flags = 0;
+      data_fbuf->mem = buf;
+      //append_fbuf->pos = ((offset < append_offset) ? 0 : (offset - append_offset)); // not used with .mem
+
+    } else { // not Crypt4GH
+
+      data_fbuf->size = data_size;
+      data_fbuf->flags = FUSE_BUF_IS_FD | FUSE_BUF_FD_SEEK;
+      data_fbuf->fd = fh->fd;
+      data_fbuf->pos = data_offset;
     }
 
-  } else {
-    /* header already sent, sending now the payload, until EOF */
-    struct fuse_bufvec buf = FUSE_BUFVEC_INIT(size); /* might be more than what's left in the FD */
-    buf.buf[0].flags = FUSE_BUF_IS_FD | FUSE_BUF_FD_SEEK; /* we don't use FUSE_BUF_FD_RETRY */
-    buf.buf[0].fd = fh->fd;
-    buf.buf[0].pos = offset - fh->header_size;
-    fuse_reply_data(req, &buf, FUSE_BUF_SPLICE_MOVE);
   }
-}
 
+  /* Finally: Outputting the buffers */
+  struct fuse_bufvec3 bufv;
+  bufv.count = 0;
+  bufv.idx = 0;
+  bufv.off = 0;
+  if(prepend_fbuf){ 
+    struct fuse_buf *b = &bufv.buf[bufv.count++];
+    b->size = prepend_fbuf->size;
+    b->flags = prepend_fbuf->flags;
+    b->mem = prepend_fbuf->mem;
+    b->pos = prepend_fbuf->pos;
+    b->fd = prepend_fbuf->fd;
+    D3("we have a prepend buf");
+  }
+  if(data_fbuf){
+    struct fuse_buf *b = &bufv.buf[bufv.count++];
+    b->size = data_fbuf->size;
+    b->flags = data_fbuf->flags;
+    b->mem = data_fbuf->mem;
+    b->pos = data_fbuf->pos;
+    b->fd = data_fbuf->fd;
+    D3("we have a data buf");
+  }
+  if(append_fbuf){
+    struct fuse_buf *b = &bufv.buf[bufv.count++]; 
+    b->size = append_fbuf->size;
+    b->flags = append_fbuf->flags;
+    b->mem = append_fbuf->mem;
+    b->pos = append_fbuf->pos;
+    b->fd = append_fbuf->fd;
+    D3("we have an append buf");
+  }
+
+  D3("buf count: %d", bufv.count);
+
+  /* optimization if count == 1 && not fd */
+  if(bufv.count == 1 && !(bufv.buf[0].flags & FUSE_BUF_IS_FD)){
+    fuse_reply_buf(req, bufv.buf[0].mem, bufv.buf[0].size);
+  } else {
+    fuse_reply_data(req, (struct fuse_bufvec*)&bufv, FUSE_BUF_SPLICE_MOVE);
+  }
+  /* fallthrough for cleanup */
+
+error:
+
+  if(prepend_fbuf) free(prepend_fbuf);
+  if(append_fbuf) free(append_fbuf);
+  if(data_fbuf) free(data_fbuf);
+  if(buf) free(buf);
+
+  if(err) fuse_reply_err(req, -err);
+}
 
 
 /*
@@ -905,18 +921,15 @@ __attribute__((nonnull))
   return -EPERM;
 }
 
-void
-c4gh_read(fuse_req_t req, fuse_ino_t ino, size_t size,
-	  off_t offset, struct fuse_file_info *fi)
+static int
+c4gh_read(off_t offset, size_t size, struct fs_file *fh, char* b)
 {
-
-  if(ino == FUSE_CONTENT_ID)
-    return (void) sqlitefs_read_content(req, (struct buffer *)fi->fh, size, offset);
-
-  D1("READ (c4gh) %lu | offset: " OFF_FMT " | size: %zu", ino, offset, size);
+  D1("READ (c4gh) offset: " OFF_FMT " | size: %zu", offset, size);
 
   int err = -EIO;
-  struct fs_file *fh = (struct fs_file*) fi->fh;
+
+  if(!config.singlethread)
+    pthread_mutex_lock(&fh->lock);
 
   /* Check if we already have the header */
   if(fh->nkeys == 0
@@ -927,7 +940,9 @@ c4gh_read(fuse_req_t req, fuse_ino_t ino, size_t size,
      && fh->nkeys == 0
      ){
     E("Opening header failed");
-    return (void) fuse_reply_err(req, EPERM);
+    if(!config.singlethread)
+      pthread_mutex_unlock(&fh->lock);
+    return -EPERM;
   }
 
   D2("%d session keys", fh->nkeys);
@@ -948,14 +963,6 @@ c4gh_read(fuse_req_t req, fuse_ino_t ino, size_t size,
   size_t leftover = size;
   size_t received = 0;
 
-  char* buf = calloc(size, sizeof(char));
-  if(buf == NULL)
-    return (void) fuse_reply_err(req, ENOMEM);
-    
-  char *b = buf;
-  if(!config.singlethread)
-    pthread_mutex_lock(&fh->lock);
-
   while(leftover > 0){
 
     /* pull segment */
@@ -963,17 +970,16 @@ c4gh_read(fuse_req_t req, fuse_ino_t ino, size_t size,
       D3("Skipping pulling segment %u", segment_idx);
     } else {
       len = c4gh_pull_segment(segment_idx, fh);
-      D2("pulling segment got %zu", len);
+      D3("pulling segment got %zu", len);
       
       if(len < 0){ err = len; goto done; }
       if(len == 0) goto done;
       /* decrypt segment */
       D2("Decrypting");
       err = c4gh_decrypt_segment(fh);
-      if(err){
-	D2("Decrypting error: %d", err);
+      D2("Decrypting error: %d", err);
+      if(err)
 	goto done;
-      }
       fh->last_segment = segment_idx;
     }
 
@@ -997,18 +1003,7 @@ done:
   if(!config.singlethread)
     pthread_mutex_unlock(&fh->lock);
 
-  if(err < 0){
-    if(buf) free(buf);
-    return (void) fuse_reply_err(req, -err);
-  }
-
-  D3("Answering %zu bytes", size - leftover);
-
-  struct fuse_bufvec bufv = FUSE_BUFVEC_INIT(size);
-  bufv.buf[0].mem = buf;
-  bufv.buf[0].pos = 0;
-  fuse_reply_data(req, &bufv, FUSE_BUF_SPLICE_MOVE);
-  free(buf);
+  return err;
 }
 
 
@@ -1018,22 +1013,17 @@ fs_operations(void)
 
   static struct fuse_lowlevel_ops fs_oper;
 
-  fs_oper.lookup       = sqlitefs_lookup;
-  fs_oper.getattr      = sqlitefs_getattr;
-  fs_oper.opendir      = sqlitefs_opendir;
-  fs_oper.readdirplus  = sqlitefs_readdir_plus;
-  fs_oper.releasedir   = sqlitefs_releasedir;
-  fs_oper.open         = sqlitefs_open;
-  fs_oper.release      = sqlitefs_release;
+  memset(&fs_oper, 0, sizeof(struct fuse_lowlevel_ops));
 
-  if(config.c4gh_decrypt)
-    fs_oper.read         = c4gh_read;
-  else
-    fs_oper.read         = sqlitefs_read;
+  fs_oper.lookup       = crypt4gh_sqlite_lookup;
+  fs_oper.getattr      = crypt4gh_sqlite_getattr;
+  fs_oper.opendir      = crypt4gh_sqlite_opendir;
+  fs_oper.readdirplus  = crypt4gh_sqlite_readdir_plus;
+  fs_oper.releasedir   = crypt4gh_sqlite_releasedir;
+  fs_oper.open         = crypt4gh_sqlite_open;
+  fs_oper.release      = crypt4gh_sqlite_release;
+  fs_oper.read         = crypt4gh_sqlite_read;
 
-  //fs_oper.statfs       = sqlitefs_statfs;
+  //fs_oper.statfs       = crypt4gh_sqlite_statfs;
   return &fs_oper;
 }
-
-
-//WITH RECURSIVE cte AS (                                     SELECT e.inode, '/' || e.name as name, e.parent_inode, e.is_dir                                     FROM entries e                                     WHERE parent_inode=1 AND inode>1                                    UNION ALL                                    SELECT e.inode, cte.name || '/' || e.name, e.parent_inode, e.is_dir                                     FROM entries e                                     INNER JOIN cte ON cte.inode=e.parent_inode AND cte.is_dir                                   )                                  SELECT sum(length(name)+1) FROM cte WHERE cte.is_dir IS FALSE;
