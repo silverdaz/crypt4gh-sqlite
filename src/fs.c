@@ -522,6 +522,9 @@ crypt4gh_sqlite_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
       fh->append = (uint8_t *)sqlite3_column_blob(fh->stmt, 4);
       fh->append_size = (uint64_t)sqlite3_column_bytes(fh->stmt, 4);
     
+#if 0
+      D2("CWD         : %s", get_current_dir_name());
+#endif
       D2("filepath    : %s", filepath);
       D2("header_size : %u", fh->header_size);
       D2("payload_size: %lu", fh->payload_size);
