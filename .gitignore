@@ -15,6 +15,7 @@ crypt4gh-sqlite.fs
 aclocal.m4
 autom4te.cache
 Makefile
+!example/Makefile
 config.log
 config.status
 config.h
