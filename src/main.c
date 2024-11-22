@@ -39,6 +39,8 @@ static void usage(struct fuse_args *args)
 "    -o entry_timeout=S     seconds for which lookup names are cached [default: one day]\n"
 "    -o attr_timeout=S      seconds for which directories/files attributes are cached [default: one day]\n"
 "    -o dotdot              Shows '.' and '..' directories [default: ignored]\n"
+"    -o user_id=N           user id of the mount point [default: caller's uid]\n"
+"    -o group_id=N          group id of the mount point [default: caller's gid]\n"
 "\n"
 "Crypt4GH Options (if enabled):\n"
 "    -o seckey=<path>       Absolute path to the Crypt4GH secret key\n"
@@ -68,6 +70,10 @@ static struct fuse_opt fs_opts[] = {
 	CRYPT4GH_SQLITE_OPT("file_cache",   file_cache, 1),
 
 	CRYPT4GH_SQLITE_OPT("dotdot",       show_dotdot, 1),
+
+	/* Mount group id */
+	CRYPT4GH_SQLITE_OPT("user_id=%u", uid, 0), // chill... it's not root
+	CRYPT4GH_SQLITE_OPT("group_id=%u", gid, 0),
 
 	/* in case Crypt4GH is enabled */
 	CRYPT4GH_SQLITE_OPT("seckey=%s"             , seckeypath         , 0),
@@ -283,8 +289,8 @@ int main(int argc, char *argv[])
   config.entry_timeout = DEFAULT_ENTRY_TIMEOUT;
   config.attr_timeout = DEFAULT_ATTR_TIMEOUT;
 
-  config.uid = getuid();
-  config.gid = getgid();
+  config.uid = getuid(); /* current user */
+  config.gid = getgid(); /* current group */
 
   /* General options */
   if (fuse_opt_parse(&args, &config, fs_opts, fs_opt_proc) == -1)
@@ -311,6 +317,20 @@ int main(int argc, char *argv[])
     fprintf(stderr, "see `%s -h' for usage\n", argv[0]);
     exit(1);
   }
+
+  if ( config.uid < 0 )
+    {
+      fprintf(stderr, "Invalid user IDs\n");
+      fprintf(stderr, "see `%s -h' for usage\n", argv[0]);
+      exit(1);
+    }
+
+  if ( config.gid < 0 )
+    {
+      fprintf(stderr, "Invalid group IDs\n");
+      fprintf(stderr, "see `%s -h' for usage\n", argv[0]);
+      exit(1);
+    }
 
   fuse_opt_insert_arg(&args, 1, "-ofsname=" FS_NAME);
 

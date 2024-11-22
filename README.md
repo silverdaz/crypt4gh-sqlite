@@ -18,4 +18,4 @@ Requirements:
 
 ## Example
 
-...
+We include a simple [example](example). It shows how to prepend/append data, decrypt a Crypt4GH file, or not (ie passthrough).
