@@ -1,0 +1,40 @@
+name: Build
+
+on: [push]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install libsodium
+      run: sudo apt-get install -y libsodium-dev
+    - name: Install fuse3
+      run: sudo apt-get install -y libfuse3-dev
+    - name: Install pkg-config
+      run: sudo apt-get install -y pkg-config
+    - name: Install Openssl
+      run: sudo apt-get install -y libssl-dev
+    - name: Install Python
+      run: sudo apt-get install -y python3 python3-pip
+    - name: Install Crypt4GH
+      run: sudo python3 -m pip install crypt4gh
+    - name: Install build
+      run: sudo apt-get install -y autoconf automake make gcc
+    - name: Compile
+      run: |
+        autoreconf -i
+        ./configure
+        make
+        sudo make install
+    - name: Update the test and start the file system
+      run: |
+        make -C example update up
+    - name: Test
+      run: |
+        diff example/mnt/crypt4gh/cleartext <(C4GH_PASSPHRASE=hello crypt4gh decrypt --sk example/example.seckey < example/mnt/crypt4gh/encrypted 2>/dev/null)
+    - name: Tear down
+      run: |
+        make -C example down
