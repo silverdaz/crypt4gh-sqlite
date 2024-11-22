@@ -745,7 +745,7 @@ crypt4gh_sqlite_read(fuse_req_t req, fuse_ino_t ino, size_t size,
     D3("we have an append buf");
   }
 
-  D3("buf count: %d", bufv.count);
+  D3("buf count: %zu", bufv.count);
 
   /* optimization if count == 1 && not fd */
   if(bufv.count == 1 && !(bufv.buf[0].flags & FUSE_BUF_IS_FD)){
@@ -989,7 +989,7 @@ crypt4gh_sqlite_xattr_size(fuse_ino_t ino, const char* name, const char* sql)
 static void
 crypt4gh_sqlite_listxattr(fuse_req_t req, fuse_ino_t ino, size_t size)
 {
-  D1("LISTXATTR %lu | size:%zu", ino, (int)size);
+  D1("LISTXATTR %lu | size:%zu", ino, size);
 
   if(size == 0){ /* requesting the buffer size */
     int vlen = crypt4gh_sqlite_xattr_size(ino, NULL, listxattr_size_query);
