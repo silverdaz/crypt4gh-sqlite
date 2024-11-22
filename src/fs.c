@@ -407,6 +407,7 @@ skip:
 struct fs_file {
 
   int fd;
+  fuse_ino_t ino;
 
   uint64_t payload_size; /* decrypted size */
 
@@ -445,110 +446,22 @@ struct fs_file {
   size_t  ciphersegment_len;
 
   pthread_mutex_t lock;
-  
+  sqlite3_stmt *stmt;
 };
 
 static inline void
 fs_file_free(struct fs_file *f)
 {
+  D3("Cleaning file %lu", f->ino);
   if(!f) return;
   if(f->fd > 0) close(f->fd);
-  if(f->prepend > 0) free(f->prepend);
-  if(f->append > 0) free(f->append);
-  if(f->header) free(f->header);
+
+  if(f->stmt) sqlite3_finalize(f->stmt);
+  // f->stmt = NULL;
+
   if(f->session_keys) free(f->session_keys);
   if(f->edit_list) free(f->edit_list);
   free(f);
-}
-
-static int
-do_open(struct fs_file *fh,
-	const char* filepath, int flags,
-	const uint8_t *header, unsigned int header_size,
-	const uint8_t *prepend, uint64_t prepend_size,
-	const uint8_t *append, uint64_t append_size)
-{
-  int rc = 0;
-
-  /* File settings */
-  if(filepath != NULL && fh->payload_size > 0){
-    D2("opening %s | flags=%d", filepath, flags);
-    fh->fd = open(filepath, flags);
-    if (fh->fd == -1){
-      rc = 2;
-      goto bailout;
-    }
-
-    /* Crypt4GH settings */
-    if(header != NULL && header_size > 0){
-
-      D3("We have a header | size=%lu", header_size);
-
-      fh->header = calloc(header_size, sizeof(uint8_t));
-      if (fh->header == NULL){
-	rc = 3;
-	goto bailout;
-      }
-
-      fh->header_size = header_size;
-      memcpy(fh->header, header, header_size);
-    }
-
-  } /* else {
-    fh->fd = 0;
-    fh->header_size = 0;
-    fh->header = NULL;
-  } */
-
-
-  /* prepare prepend file */
-  if(prepend != NULL && prepend_size > 0){
-
-    D3("We have prepended data | size=%lu", prepend_size);
-
-    fh->prepend = calloc(prepend_size, sizeof(uint8_t));
-    if (fh->prepend == NULL){
-      rc = 4;
-      goto bailout;
-    }
-    fh->prepend_size = prepend_size;
-    memcpy(fh->prepend, prepend, prepend_size);
-  }
-
-  /* prepare append file */
-  if(append != NULL && append_size > 0){
-
-    D3("We have appended data | size=%lu", append_size);
-
-    fh->append = calloc(append_size, sizeof(uint8_t));
-    if (fh->append == NULL){
-      rc = 5;
-      goto bailout;
-    }
-    fh->append_size = append_size;
-    memcpy(fh->append, append, append_size);
-  }
-
-  return 0;
-
-bailout:
-
-  /* Cleanup in case of errors */
-  if(fh->fd > 0) close(fh->fd);
-  fh->payload_size = 0;
-
-  if(fh->header) free(fh->header);
-  fh->header_size = 0;
-
-  if(fh->prepend) free(fh->prepend);
-  fh->prepend = NULL;
-  fh->prepend_size = 0;
-
-  if(fh->append) free(fh->append);
-  fh->append = NULL;
-  fh->append_size = 0;
-
-  return rc;
 }
 
 static void
@@ -565,50 +478,54 @@ crypt4gh_sqlite_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
     return (void) fuse_reply_err(req, ENOMEM);
 
   int err = 1;
-  sqlite3_stmt *stmt = NULL;
-  if( sqlite3_prepare_v2(config.db, file_info_query, -1, &stmt, NULL) /* != SQLITE_OK */ ||
-      !stmt){
+  fh->ino = ino;
+
+  if( sqlite3_prepare_v2(config.db, file_info_query, -1, &fh->stmt, NULL) /* != SQLITE_OK */ ||
+      !fh->stmt){
     E("Preparing statement: %s | %s", file_info_query, sqlite3_errmsg(config.db));
-    if(stmt) sqlite3_finalize(stmt);
     fs_file_free(fh);
     return (void) fuse_reply_err(req, EIO);
   }
 
   /* Execute the query. */
-  sqlite3_bind_int64(stmt, 1, ino);
+  sqlite3_bind_int64(fh->stmt, 1, ino);
 
   while(1){
 
-    err = sqlite3_step(stmt);
+    err = sqlite3_step(fh->stmt);
     if(err == SQLITE_DONE )
       break;
 
     if(err == SQLITE_ROW ){
       
-      const char* filepath = sqlite3_column_text(stmt, 0);
+      const char* filepath = sqlite3_column_text(fh->stmt, 0);
 
-      const uint8_t *header = sqlite3_column_blob(stmt, 1);
-      unsigned int header_size = sqlite3_column_bytes(stmt, 1);
+      fh->header = (uint8_t *)sqlite3_column_blob(fh->stmt, 1);
+      fh->header_size = (unsigned int)sqlite3_column_bytes(fh->stmt, 1);
 
-      fh->payload_size = sqlite3_column_int64(stmt, 2);
+      fh->payload_size = sqlite3_column_int64(fh->stmt, 2);
 
-      const uint8_t *prepend = sqlite3_column_blob(stmt, 3);
-      uint64_t prepend_size = (uint64_t)sqlite3_column_bytes(stmt, 3);
+      fh->prepend = (uint8_t *)sqlite3_column_blob(fh->stmt, 3);
+      fh->prepend_size = (uint64_t)sqlite3_column_bytes(fh->stmt, 3);
 
-      const uint8_t *append = sqlite3_column_blob(stmt, 4);
-      uint64_t append_size = (uint64_t)sqlite3_column_bytes(stmt, 4);
+      fh->append = (uint8_t *)sqlite3_column_blob(fh->stmt, 4);
+      fh->append_size = (uint64_t)sqlite3_column_bytes(fh->stmt, 4);
     
       D2("filepath    : %s", filepath);
-      D2("header_size : %u", header_size);
+      D2("header_size : %u", fh->header_size);
       D2("payload_size: %lu", fh->payload_size);
-      D2("prepend_size: %lu", prepend_size);
-      D2("append_size : %lu", append_size);
+      D2("prepend_size: %lu", fh->prepend_size);
+      D2("append_size : %lu", fh->append_size);
 
-      err = do_open(fh,
-		    filepath, fi->flags & ~O_NOFOLLOW,
-		    header, header_size,
-		    prepend, prepend_size,
-		    append, append_size);
+      /* File settings */
+      if(filepath != NULL && fh->payload_size > 0){
+	fh->fd = open(filepath, fi->flags);
+	if (fh->fd == -1){
+	  D2("failed to open %s: %d | %s", filepath, errno, strerror(errno));
+	  err = 1;
+	  break;
+	}
+      }
 
 #if 0
       if(fh->header_size > 4)
@@ -616,16 +533,18 @@ crypt4gh_sqlite_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 
       if(fh->prepend_size > 4)
 	D2("prepend: %02x%02x%02x%02x", fh->prepend[0], fh->prepend[1], fh->prepend[2], fh->prepend[3]);
+
+      if(fh->append_size > 4)
+	D2("append: %02x%02x%02x%02x", fh->append[0], fh->append[1], fh->append[2], fh->append[3]);
 #endif
 
+      err = 0;
       break;
     }
 
     D1("looping the open: [%d] %s", err, sqlite3_errmsg(config.db));
   }
 
-  sqlite3_finalize(stmt);
-  
   if(err){
     int e = (errno)?errno:EPERM;
     E("Error opening the file %lu: [%d] %s", ino, err, strerror(e));
