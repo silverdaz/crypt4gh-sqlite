@@ -23,8 +23,8 @@ You should see the file system in the current directory under `<here>/mnt/`.
 	├── full.txt
 	├── slim.txt
 	└── subdir
-		├── file1.txt
-		└── file2.txt
+	    ├── file1.txt
+	    └── file2.txt
 	
 	4 directories, 8 files
 
