@@ -1,4 +1,5 @@
-[![GitHub CI](https://github.com/silverdaz/crypt4gh-sqlite/workflows/CI/badge.svg)](https://github.com/silverdaz/crypt4gh-sqlite/actions)
+[![GitHub CI](https://github.com/silverdaz/crypt4gh-sqlite/actions/workflows/build.yml/badge.svg)](https://github.com/silverdaz/crypt4gh-sqlite/actions/workflows/build.yml)
+
 
 # Crypt4GH file system over an SQLite database
 
