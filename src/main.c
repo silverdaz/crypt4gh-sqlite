@@ -1,3 +1,13 @@
+/**********************************************************************************
+ * Read-only Crypt4GH file system, listing information from an SQLite "database".
+ *
+ *  Author:  Frédéric Haziza <silverdaz@gmail.com>
+ *    Date:  November 2024
+ *
+ *  This program can be distributed under the terms of the GNU Affero GPL.
+ *  See the file COPYING.
+ **********************************************************************************/
+
 #include "includes.h"
 
 #define DEFAULT_MAX_THREADS   10
