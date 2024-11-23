@@ -38,26 +38,6 @@ typedef enum {
 
 
 /*
- * Copy a value to cp in little-endian format
- */
-
-#define PUT_64BIT_LE(cp, value) do {					\
-    (cp)[7] = (value) >> 56;						\
-    (cp)[6] = (value) >> 48;						\
-    (cp)[5] = (value) >> 40;						\
-    (cp)[4] = (value) >> 32;						\
-    (cp)[3] = (value) >> 24;						\
-    (cp)[2] = (value) >> 16;						\
-    (cp)[1] = (value) >> 8;						\
-    (cp)[0] = (value); } while (0)
-
-#define PUT_32BIT_LE(cp, value) do {					\
-    (cp)[3] = (value) >> 24;						\
-    (cp)[2] = (value) >> 16;						\
-    (cp)[1] = (value) >> 8;						\
-    (cp)[0] = (value); } while (0)
-
-/*
  * Read 8 bytes from p and 
  * get its integer representation in little-endian format
  */
