@@ -272,16 +272,6 @@ c4gh_destroy(void)
 int main(int argc, char *argv[])
 {
 
-#if MUST_BE_ROOT
-  /* if we're really root and aren't running setuid */
-  const uid_t ruid = getuid();
-  const uid_t euid = geteuid();
-  if( (uid_t) 0 != ruid || ruid != euid ){
-    fprintf(stderr, "%s can only be run as root\n", argv[0]);
-    exit(1);
-  }
-#endif
-  
   int res = 0;
   struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
   struct fuse *fuse;
