@@ -629,7 +629,6 @@ crypt4gh_sqlite_read(fuse_req_t req, fuse_ino_t ino, size_t size,
   size_t append_offset = fh->prepend_size + fh->payload_size;
 
   struct fuse_buf *prepend_fbuf = NULL, *append_fbuf = NULL, *data_fbuf = NULL;
-  char *buf=NULL;
   size_t prepend_len = 0;
   size_t append_len = 0;
   int err = 0;
@@ -691,16 +690,15 @@ crypt4gh_sqlite_read(fuse_req_t req, fuse_ino_t ino, size_t size,
 
     if(fh->header){ // Try Crypt4GH data
 
-      buf = calloc(data_size, sizeof(char));
-      if(!buf){ err = -ENOMEM; goto error; }
+      data_fbuf->mem = calloc(data_size, sizeof(char));
+      if(!data_fbuf->mem){ err = -ENOMEM; goto error; }
       
       D3("encrypted data: offset %zu, size: %zu", data_offset, data_size);
-      err = c4gh_read(data_offset, data_size, fh, buf);
+      err = c4gh_read(data_offset, data_size, fh, data_fbuf->mem);
       if(err < 0){ D1("c4gh_read error: %s", strerror(-err)); goto error; }
       
       data_fbuf->size = data_size;
       //data_fbuf->flags = 0;
-      data_fbuf->mem = buf;
       //append_fbuf->pos = ((offset < append_offset) ? 0 : (offset - append_offset)); // not used with .mem
 
     } else { // not Crypt4GH
@@ -760,8 +758,10 @@ error:
 
   if(prepend_fbuf) free(prepend_fbuf);
   if(append_fbuf) free(append_fbuf);
-  if(data_fbuf) free(data_fbuf);
-  if(buf) free(buf);
+  if(data_fbuf){
+    if(data_fbuf->mem) free (data_fbuf->mem);
+    free(data_fbuf);
+  }
 
   if(err) fuse_reply_err(req, -err);
 }
