@@ -5,7 +5,7 @@
  *    Date:  November 2024
  *
  *  This program can be distributed under the terms of the GNU Affero GPL.
- *  See the file COPYING.
+ *  See the LICENSE file.
  **********************************************************************************/
 
 #include "includes.h"

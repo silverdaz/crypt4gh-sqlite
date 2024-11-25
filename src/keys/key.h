@@ -5,7 +5,7 @@
  *    Date:  October 2023
  *
  *  This program can be distributed under the terms of the GNU Affero GPL.
- *  See the file COPYING.
+ *  See the LICENSE file.
  **********************************************************************************/
 
 #ifndef _CRYPT4GH_SQLITE_KEY_H
