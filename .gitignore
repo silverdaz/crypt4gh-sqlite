@@ -4,11 +4,6 @@
 tmp/
 *.old
 *.tmp
-src/_old
-testing.mk
-aclocal.m4
-
-example/mnt
 
 crypt4gh-sqlite.fs
 
@@ -16,6 +11,7 @@ aclocal.m4
 autom4te.cache
 Makefile
 !example/Makefile
+example/mnt
 config.log
 config.status
 config.h
