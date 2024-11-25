@@ -57,7 +57,7 @@ crypt4gh_sqlite_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *f
 
   if( ino == FUSE_ROOT_ID ){ /* It's the root directory itself */
     s.st_ino = ino;
-    s.st_mode = S_IFDIR | 0500;
+    s.st_mode = S_IFDIR | config.dperm;
     s.st_nlink = 1;
     s.st_size = 0;
     time_t now = time(NULL);
@@ -105,9 +105,9 @@ crypt4gh_sqlite_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *f
       s.st_size = (uint64_t)sqlite3_column_int(stmt, 3);
       
       if(sqlite3_column_int(stmt, 4)) // is_dir
-	s.st_mode = S_IFDIR | 0500;
+	s.st_mode = S_IFDIR | config.dperm;
       else 
-	s.st_mode = S_IFREG | 0400;
+	s.st_mode = S_IFREG | config.fperm;
       
       time_t now = time(NULL);
       struct timespec mt = { .tv_sec = mtime, .tv_nsec = 0L },
@@ -191,9 +191,9 @@ __attribute__((nonnull(3)))
       e.attr.st_size = (uint64_t)sqlite3_column_int64(stmt, 4);
 
       if(sqlite3_column_int(stmt, 5)) // is_dir
-	e.attr.st_mode = S_IFDIR | 0500;
+	e.attr.st_mode = S_IFDIR | config.dperm;
       else 
-	e.attr.st_mode = S_IFREG | 0400;
+	e.attr.st_mode = S_IFREG | config.fperm;
       break;
     }
 
@@ -238,7 +238,8 @@ crypt4gh_sqlite_opendir(fuse_req_t req, fuse_ino_t ino,
   }
 
   fi->fh = (uint64_t)stmt;
-  fi->cache_readdir = 1;
+  if (config.dir_cache)
+    fi->cache_readdir = 1;
   D3("stmt: %s", sqlite3_sql(stmt)); /* sqlite3_finalize will free it */
   fuse_reply_open(req, fi);
 }
@@ -312,7 +313,7 @@ crypt4gh_sqlite_readdir_plus(fuse_req_t req, fuse_ino_t ino, size_t size,
   e.attr.st_atim = at;
   e.attr.st_nlink = 1;
   e.attr.st_size = 0;
-  e.attr.st_mode = S_IFDIR | 0500;
+  e.attr.st_mode = S_IFDIR | config.dperm;
 
   if(offset < 1){
     e.ino = 2;
@@ -364,9 +365,9 @@ content:
       e.attr.st_size = (uint64_t)sqlite3_column_int64(stmt, 5);
     
       if(sqlite3_column_int(stmt, 6)) // is_dir
-	e.attr.st_mode = S_IFDIR | 0500;
+	e.attr.st_mode = S_IFDIR | config.dperm;
       else 
-	e.attr.st_mode = S_IFREG | 0400;
+	e.attr.st_mode = S_IFREG | config.fperm;
       
       /* add the entry to the buffer and check size */
       char* pe = (char*)sqlite3_column_text(stmt, 1);

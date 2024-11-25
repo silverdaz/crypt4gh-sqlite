@@ -116,6 +116,11 @@ struct fs_config {
   time_t mounted_at;
   int direct_io;
 
+  unsigned int fmask;
+  unsigned int dmask;
+  unsigned int dperm;
+  unsigned int fperm;
+
   int debug; /* replace/overwrite the fuse debug */
   int verbose;
   int foreground;

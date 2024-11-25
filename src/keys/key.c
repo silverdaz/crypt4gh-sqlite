@@ -37,7 +37,7 @@ crypt4gh_sqlite_public_key_from_blob(const char* line,
   int rc = 1;
   char* end = (char*)line + len - 1; /* point at the end */
   D3("Length: %lu", len);
-  D3("Last char: %c", *end);
+  //D3("Last char: %c", *end);
 
   while(isspace(*line)){ line++; len--; }; /* skip leading white-space (or newline) */
   while(isspace(*end)){ end--; len--; }; /* Discount trailing white-space or newline */
@@ -174,7 +174,7 @@ crypt4gh_sqlite_private_key_from_blob(char* line, size_t len,
   /* we _can_ change "line" */
   *(end+1) = '\0';
 
-  D2("base64 string: %s", line);
+  D3("base64 string: %s", line);
 
   /* Decoded string will be NULL-terminated too */
   tmp = (u_char*)malloc((len+1) * sizeof(char));

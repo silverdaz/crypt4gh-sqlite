@@ -7,7 +7,8 @@ DAZ_SECKEY=$(shell pwd)/example.seckey
 export C4GH_PASSPHRASE=hello
 
 DAZ_OPTS+=ro,seckey=$(DAZ_SECKEY),passphrase_from_env=C4GH_PASSPHRASE
-DAZ_OPTS+=allow_other
+DAZ_OPTS+=allow_other,default_permissions
+DAZ_OPTS+=file_cache,dir_cache
 
 all: up
 

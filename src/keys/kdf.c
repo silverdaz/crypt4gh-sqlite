@@ -49,7 +49,7 @@ crypt4gh_sqlite_kdf_derive_key(char* alg,
   /* See https://www.rfc-editor.org/rfc/rfc7914.txt
      and https://doc.libsodium.org/advanced/scrypt#notes */
   if (!strncmp(alg, "scrypt", 6)){
-    D1("Deriving a shared key using scrypt");
+    D3("Deriving a shared key using scrypt");
     return crypto_pwhash_scryptsalsa208sha256_ll((const uint8_t*)passphrase, passphrase_len,
 						 salt, salt_len,
 						 1<<14, 8, 1,
@@ -59,7 +59,7 @@ crypt4gh_sqlite_kdf_derive_key(char* alg,
   /* See keys/bcrypt
      and https://github.com/pyca/bcrypt/tree/master/src/_csrc */
   if (!strncmp(alg, "bcrypt", 6)){
-    D1("Deriving a shared key using scrypt");
+    D3("Deriving a shared key using scrypt");
     return bcrypt_pbkdf(passphrase, passphrase_len,
 			salt, salt_len,
 			key, key_len,
@@ -68,6 +68,7 @@ crypt4gh_sqlite_kdf_derive_key(char* alg,
 
   /* See https://www.openssl.org/docs/man1.1.0/man3/PKCS5_PBKDF2_HMAC.html */
   if (!strncmp(alg, "pbkdf2_hmac_sha256", 18)){
+    D3("Deriving a shared key using HMAC-SHA256");
     const EVP_MD *digest = EVP_sha256();
     if(digest == NULL) return 3;
     int rc = PKCS5_PBKDF2_HMAC(passphrase, passphrase_len,
