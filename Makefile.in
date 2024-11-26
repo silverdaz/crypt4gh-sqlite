@@ -28,7 +28,7 @@ all: $(TARGET)
 $(libdir) $(bindir):
 	mkdir -p $@
 
-$(TARGET): $(OBJS) $(EXTRA_LIBS)
+$(TARGET): $(OBJS)
 	@echo "Creating target $@"
 	@$(CC) -o $@ $(OBJS) $(LDFLAGS) $(LIBS)
 
