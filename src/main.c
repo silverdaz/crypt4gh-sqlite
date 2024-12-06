@@ -31,8 +31,8 @@ static void usage(struct fuse_args *args)
 "    -f                     foreground operation\n"
 "    -s                     disable multi-threaded operation\n"
 "    -o opt,[opt...]        mount options\n"
-"    -d, --debug            print some debugging information (implies -f)\n"
-"        --debug=N          debug level <N>\n"
+"    -g, --local_debug      print some debugging information (implies -f)\n"
+"        --local_debug=N    debug level <N>\n"
 "    -o direct_io           enable direct i/o\n"
 "    -o file_cache          instructs the kernel to cache output data\n"
 "    -o dir_cache           instructs the kernel to cache directory listings\n"
@@ -62,9 +62,9 @@ static struct fuse_opt fs_opts[] = {
 	CRYPT4GH_SQLITE_OPT("verbose",	verbose, 1),
 	CRYPT4GH_SQLITE_OPT("-f",		foreground, 1),
 
-	//CRYPT4GH_SQLITE_OPT("-d",		debug, 1),
-	CRYPT4GH_SQLITE_OPT("_debug",	_debug, 1),
-	CRYPT4GH_SQLITE_OPT("_debug=%u",     _debug, 0),
+	CRYPT4GH_SQLITE_OPT("-g",	      local_debug, 1),
+	CRYPT4GH_SQLITE_OPT("local_debug",    local_debug, 1),
+	CRYPT4GH_SQLITE_OPT("local_debug=%u", local_debug, 0),
 
 	CRYPT4GH_SQLITE_OPT("direct_io",    direct_io, 1),
 	CRYPT4GH_SQLITE_OPT("file_cache",   file_cache, 1),
@@ -83,7 +83,7 @@ static struct fuse_opt fs_opts[] = {
 	/* if multithreaded */
 	CRYPT4GH_SQLITE_OPT("-s"              , singlethread    , 1),
 	CRYPT4GH_SQLITE_OPT("clone_fd"        , clone_fd        , 1),
-	CRYPT4GH_SQLITE_OPT("max_idle_threads=%u", max_idle_threads, 0),
+	CRYPT4GH_SQLITE_OPT("max_threads=%u", max_threads, 0),
 
 	CRYPT4GH_SQLITE_OPT("entry_timeout=%lf",     entry_timeout, 0),
 	CRYPT4GH_SQLITE_OPT("attr_timeout=%lf",      attr_timeout, 0),
@@ -270,6 +270,14 @@ int main(int argc, char *argv[])
   struct fuse_session *se;
   struct fuse_lowlevel_ops *operations;
  
+
+  if(fuse_version() < FUSE_VERSION ){
+    fprintf(stderr, "We need at least FUSE version %d\n", FUSE_VERSION);
+    fprintf(stderr, "You have FUSE version %d\n", fuse_version());
+    return 1;
+  }
+  
+
   memset(&config, 0, sizeof(struct fs_config));
 
   config.progname = argv[0];
@@ -278,7 +286,8 @@ int main(int argc, char *argv[])
   config.singlethread = 0;
   config.foreground = 0;
   config.mounted_at = time(NULL);
-  config.max_idle_threads = DEFAULT_MAX_THREADS;
+  config.max_idle_threads = UINT_MAX;
+  config.max_threads = DEFAULT_MAX_THREADS;
   config.entry_timeout = DEFAULT_ENTRY_TIMEOUT;
   config.attr_timeout = DEFAULT_ATTR_TIMEOUT;
 
@@ -333,7 +342,7 @@ int main(int argc, char *argv[])
 
   fuse_opt_insert_arg(&args, 1, "-ofsname=" FS_NAME);
 
-  if(config._debug)
+  if(config.local_debug)
     config.foreground = 1;
 
   D1(FS_NAME " version %s", PACKAGE_VERSION);
@@ -414,14 +423,17 @@ int main(int argc, char *argv[])
     D2("Mode: single-threaded");
     res = fuse_session_loop(se);
   } else {
-    struct fuse_loop_config cf = {
-      .clone_fd = config.clone_fd,
-      .max_idle_threads = config.max_idle_threads,
-    };
-    D2("Mode: multi-threaded (max idle threads: %d)", cf.max_idle_threads);
-    res = fuse_session_loop_mt(se, &cf);
+    res = 0;
+    struct fuse_loop_config *cf = fuse_loop_cfg_create();
+    if(cf){
+      fuse_loop_cfg_set_idle_threads(cf, config.max_idle_threads);
+      fuse_loop_cfg_set_max_threads(cf, config.max_threads);
+      fuse_loop_cfg_set_clone_fd(cf, config.clone_fd);
+      D2("Mode: multi-threaded (max idle threads: %d)", config.max_threads);
+      res = fuse_session_loop_mt(se, cf);
+      fuse_loop_cfg_destroy(cf);
+    }
   }
-
 
  bailout_unmount:
   D2("Unmounting");

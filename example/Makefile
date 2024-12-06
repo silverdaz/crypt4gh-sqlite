@@ -14,10 +14,10 @@ all: up
 
 debug: debug2
 
-debug1 debug2 debug3: DAZ_FS+= -d
-debug1: DAZ_OPTS+=debug=1
-debug2: DAZ_OPTS+=debug=2
-debug3: DAZ_OPTS+=debug=3
+debug1 debug2 debug3: DAZ_FS+= -d -g
+debug1: DAZ_OPTS+=local_debug=1
+debug2: DAZ_OPTS+=local_debug=2
+debug3: DAZ_OPTS+=local_debug=3
 up debug1 debug2 debug3: | mnt
 	$(DAZ_FS) $(DAZ_OPTS:%=-o %) $(DAZ_SQLITE) $(DAZ_MNT)
 

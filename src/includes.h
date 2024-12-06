@@ -21,7 +21,7 @@
 #endif
 
 #ifndef FUSE_USE_VERSION
-#define FUSE_USE_VERSION 34
+#define FUSE_USE_VERSION FUSE_MAKE_VERSION(3, 12)
 #endif
 
 #include <fuse_lowlevel.h>
@@ -119,7 +119,7 @@ struct fs_config {
   unsigned int dperm;
   unsigned int fperm;
 
-  int _debug; /* replace/overwrite the fuse debug */
+  int local_debug;
   int verbose;
   int foreground;
   char *progname;
@@ -150,6 +150,7 @@ struct fs_config {
   /* multithreaded */
   int singlethread;
   int clone_fd;
+  int max_threads;
   int max_idle_threads;
 };
 
@@ -163,26 +164,10 @@ struct fuse_lowlevel_ops* fs_operations(void);
 #define D2(fmt, ...)
 #define D3(fmt, ...)
 #else
-#define D1(fmt, ...) if(config._debug > 0) fprintf(stderr, fmt "\n", ##__VA_ARGS__)
-#define D2(fmt, ...) if(config._debug > 1) fprintf(stderr, "     " fmt "\n", ##__VA_ARGS__)
-#define D3(fmt, ...) if(config._debug > 2) fprintf(stderr, "          " fmt "\n", ##__VA_ARGS__)
+#define D1(fmt, ...) if(config.local_debug > 0) fprintf(stderr, "# " fmt "\n", ##__VA_ARGS__)
+#define D2(fmt, ...) if(config.local_debug > 1) fprintf(stderr, "#      " fmt "\n", ##__VA_ARGS__)
+#define D3(fmt, ...) if(config.local_debug > 2) fprintf(stderr, "#           " fmt "\n", ##__VA_ARGS__)
 #endif
 
 #define E(fmt, ...)  fprintf(stderr, "\x1b[31mError:\x1b[0m " fmt "\n", ##__VA_ARGS__)
 #define W(fmt, ...)  fprintf(stderr, "Warning: " fmt "\n", ##__VA_ARGS__)
-
-
-/*
- * Prints byte array to its hexadecimal representation
- */
-#define Hx(prefix, leading, v, len) { \
-    fprintf(stderr, prefix "%s: ", leading); \
-    size_t _i = 0;			     \
-    uint8_t* _p = (uint8_t*)v;				   \
-    for(;_i<len;_i++){ fprintf(stderr, "%02x", _p[_i] ); } \
-    fprintf(stderr, "\n");				   \
-  }
-
-#define H1(leading, v, len) if(config._debug > 0) Hx("", leading, v, len)
-#define H2(leading, v, len) if(config._debug > 1) Hx("     ", leading, v, len)
-#define H3(leading, v, len) if(config._debug > 2) Hx("          ", leading, v, len)

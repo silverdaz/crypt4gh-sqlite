@@ -10,26 +10,18 @@
 
 #include "includes.h"
 
-// Lookup entry
-static char *lookup_query = "SELECT inode, ctime, mtime, nlink, size, is_dir "
-                             "FROM entries e "
-                             "WHERE parent_inode = ?1 and inode > 1 and name = ?2";
+
+#define print_expand_statement(stmt)					\
+  if(config.local_debug > 2 /* DEBUG 3 */){				\
+    char* expanded_sql = sqlite3_expanded_sql(stmt);			\
+    fprintf(stderr, "#           expanded statement: %s\n", expanded_sql); \
+    sqlite3_free(expanded_sql);						\
+  }
 
 // Get the attr $1: inode
 static char *getattr_query = "SELECT ctime, mtime, nlink, size, is_dir "
                              "FROM entries e "
                              "WHERE inode = ?1 and inode > 1";
-
-
-
-
-
-#define print_expand_statement(stmt)				   \
-  if(config._debug > 2 /* DEBUG 3 */){				   \
-    char* expanded_sql = sqlite3_expanded_sql(stmt);		   \
-    fprintf(stderr, "* expanded statement: %s\n", expanded_sql);   \
-    sqlite3_free(expanded_sql);					   \
-  }
 
 
 static void
@@ -113,6 +105,11 @@ crypt4gh_sqlite_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *f
   fuse_reply_err(req, ENOENT);
 }
 
+
+// Lookup entry
+static char *lookup_query = "SELECT inode, ctime, mtime, nlink, size, is_dir "
+                             "FROM entries e "
+                             "WHERE parent_inode = ?1 and inode > 1 and name = ?2";
 
 static void
 crypt4gh_sqlite_lookup(fuse_req_t req, fuse_ino_t inode_p, const char *name)
@@ -512,42 +509,43 @@ crypt4gh_sqlite_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
   while(1){
 
     err = sqlite3_step(fh->stmt);
-    if(err == SQLITE_DONE || err == SQLITE_ERROR)
-      break;
+    if(err == SQLITE_DONE){ err = 0; break; }
 
-    if(!found && err == SQLITE_ROW){
-      
-      const char *filepath = sqlite3_column_text(fh->stmt, 0);
+    if(err == SQLITE_ERROR){ err = 1; break; }
 
-      fh->header = (uint8_t *)sqlite3_column_blob(fh->stmt, 1);
-      fh->header_size = (unsigned int)sqlite3_column_bytes(fh->stmt, 1);
+    if(found || err != SQLITE_ROW)
+      continue;
 
-      fh->payload_size = sqlite3_column_int64(fh->stmt, 2);
-
-      fh->prepend = (uint8_t *)sqlite3_column_blob(fh->stmt, 3);
-      fh->prepend_size = (uint64_t)sqlite3_column_bytes(fh->stmt, 3);
-
-      fh->append = (uint8_t *)sqlite3_column_blob(fh->stmt, 4);
-      fh->append_size = (uint64_t)sqlite3_column_bytes(fh->stmt, 4);
+    const char *filepath = sqlite3_column_text(fh->stmt, 0);
     
-      D3("filepath    : %s", filepath);
-      D3("header_size : %u", fh->header_size);
-      D3("payload_size: %lu", fh->payload_size);
-      D3("prepend_size: %lu", fh->prepend_size);
-      D3("append_size : %lu", fh->append_size);
-
-      /* File settings */
-      if(filepath != NULL && fh->payload_size > 0){
-	fh->fd = open(filepath, fi->flags);
-	if (fh->fd == -1){
-	  D2("failed to open %s: %d | %s", filepath, errno, strerror(errno));
-	  err = 1;
-	  break;
-	}
+    fh->header = (uint8_t *)sqlite3_column_blob(fh->stmt, 1);
+    fh->header_size = (unsigned int)sqlite3_column_bytes(fh->stmt, 1);
+    
+    fh->payload_size = sqlite3_column_int64(fh->stmt, 2);
+    
+    fh->prepend = (uint8_t *)sqlite3_column_blob(fh->stmt, 3);
+    fh->prepend_size = (uint64_t)sqlite3_column_bytes(fh->stmt, 3);
+    
+    fh->append = (uint8_t *)sqlite3_column_blob(fh->stmt, 4);
+    fh->append_size = (uint64_t)sqlite3_column_bytes(fh->stmt, 4);
+    
+    D3("filepath    : %s", filepath);
+    D3("header_size : %u", fh->header_size);
+    D3("payload_size: %lu", fh->payload_size);
+    D3("prepend_size: %lu", fh->prepend_size);
+    D3("append_size : %lu", fh->append_size);
+    
+    /* File settings */
+    if(filepath != NULL && fh->payload_size > 0){
+      fh->fd = open(filepath, fi->flags);
+      if (fh->fd == -1){
+	D2("failed to open %s: %d | %s", filepath, errno, strerror(errno));
+	err = 1;
+	break;
       }
-
-      found = 1;
     }
+
+    found = 1;
   }
 
   if(err || !found){
