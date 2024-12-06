@@ -18,9 +18,6 @@
 
 #define FS_NAME "crypt4gh-sqlite.fs"
 
-#define DEFAULT_FILE_MASK 0337
-#define DEFAULT_DIR_MASK  0227
-
 /* global variable */
 struct fs_config config;
 
@@ -39,8 +36,6 @@ static void usage(struct fuse_args *args)
 "    -o direct_io           enable direct i/o\n"
 "    -o file_cache          instructs the kernel to cache output data\n"
 "    -o dir_cache           instructs the kernel to cache directory listings\n"
-"    -o file_mask=N         file permissions' mask [default: %o]\n"
-"    -o dir_mask=N          directory permissions' mask [default: %o]\n"
 "    -o entry_timeout=S     seconds for which lookup names are cached [default: one day]\n"
 "    -o attr_timeout=S      seconds for which directories/files attributes are cached [default: one day]\n"
 "    -o dotdot              Shows '.' and '..' directories [default: ignored]\n"
@@ -51,7 +46,7 @@ static void usage(struct fuse_args *args)
 "    -o seckey=<path>       Absolute path to the Crypt4GH secret key\n"
 "    -o passphrase_from_env=<ENVVAR>\n"
 "                           read passphrase from environment variable <ENVVAR>\n"
-, args->argv[0], DEFAULT_FILE_MASK, DEFAULT_DIR_MASK);
+, args->argv[0]);
 }
 
 
@@ -67,9 +62,9 @@ static struct fuse_opt fs_opts[] = {
 	CRYPT4GH_SQLITE_OPT("verbose",	verbose, 1),
 	CRYPT4GH_SQLITE_OPT("-f",		foreground, 1),
 
-	CRYPT4GH_SQLITE_OPT("-d",		debug, 1),
-	CRYPT4GH_SQLITE_OPT("debug",	debug, 1),
-	CRYPT4GH_SQLITE_OPT("debug=%u",     debug, 0),
+	//CRYPT4GH_SQLITE_OPT("-d",		debug, 1),
+	CRYPT4GH_SQLITE_OPT("_debug",	_debug, 1),
+	CRYPT4GH_SQLITE_OPT("_debug=%u",     _debug, 0),
 
 	CRYPT4GH_SQLITE_OPT("direct_io",    direct_io, 1),
 	CRYPT4GH_SQLITE_OPT("file_cache",   file_cache, 1),
@@ -80,9 +75,6 @@ static struct fuse_opt fs_opts[] = {
 	/* Mount group id */
 	CRYPT4GH_SQLITE_OPT("user_id=%u", uid, 0), // chill... it's not root
 	CRYPT4GH_SQLITE_OPT("group_id=%u", gid, 0),
-
-	CRYPT4GH_SQLITE_OPT("file_mask=%u", fmask, DEFAULT_FILE_MASK),
-	CRYPT4GH_SQLITE_OPT("dir_mask=%u", dmask, DEFAULT_DIR_MASK),
 
 	/* in case Crypt4GH is enabled */
 	CRYPT4GH_SQLITE_OPT("seckey=%s"             , seckeypath         , 0),
@@ -293,9 +285,6 @@ int main(int argc, char *argv[])
   config.uid = getuid(); /* current user */
   config.gid = getgid(); /* current group */
 
-  config.fmask = DEFAULT_FILE_MASK;
-  config.dmask = DEFAULT_DIR_MASK;
-
   /* General options */
   if (fuse_opt_parse(&args, &config, fs_opts, fs_opt_proc) == -1)
     exit(1);
@@ -337,12 +326,14 @@ int main(int argc, char *argv[])
     }
 
   /* File and Dir permissions */
-  config.dperm = 0777 & ~config.dmask;
-  config.fperm = 0666 & ~config.dmask;
+  mode_t mask = umask(0);
+  umask(mask); /* restore */
+  config.dperm = 0777 & ~mask;
+  config.fperm = 0666 & ~mask;
 
   fuse_opt_insert_arg(&args, 1, "-ofsname=" FS_NAME);
 
-  if(config.debug)
+  if(config._debug)
     config.foreground = 1;
 
   D1(FS_NAME " version %s", PACKAGE_VERSION);
@@ -353,8 +344,13 @@ int main(int argc, char *argv[])
   else 
     sqlite3_config(SQLITE_CONFIG_MULTITHREAD);
 
-  D1("Opening SQLite path: %s", config.db_path);
-  sqlite3_open_v2(config.db_path, &config.db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, NULL);
+  /* checking if the DB is writable */
+  int is_readwrite = !access(config.db_path, R_OK | W_OK);
+  D1("Opening SQLite path: %s (%s)", config.db_path, (is_readwrite) ? "read-write" : "read-only");
+  sqlite3_open_v2(config.db_path, &config.db,
+		  ((is_readwrite) ? SQLITE_OPEN_READWRITE : SQLITE_OPEN_READONLY)
+		  | SQLITE_OPEN_FULLMUTEX,
+		  NULL);
   if (config.db == NULL){
     E("Failed to allocate SQLite database handle"); 
     goto bailout;
@@ -363,6 +359,7 @@ int main(int argc, char *argv[])
     E("Failed to open DB: [%d] %s", sqlite3_extended_errcode(config.db), sqlite3_errmsg(config.db));
     goto bailout;
   }
+  (void)sqlite3_extended_result_codes(config.db, 0); // no extended codes
 
   /* Crypt4GH options */
   if(c4gh_init()){
@@ -372,6 +369,12 @@ int main(int argc, char *argv[])
   }
 
   operations = fs_operations();
+
+  /* disable if you can't write in the DB file */
+  if(!is_readwrite){
+    operations->setxattr = NULL;
+    operations->removexattr = NULL;
+  }
 
   /* FUSE loop */
   D1("Starting the FUSE session");

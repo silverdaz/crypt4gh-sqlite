@@ -116,12 +116,10 @@ struct fs_config {
   time_t mounted_at;
   int direct_io;
 
-  unsigned int fmask;
-  unsigned int dmask;
   unsigned int dperm;
   unsigned int fperm;
 
-  int debug; /* replace/overwrite the fuse debug */
+  int _debug; /* replace/overwrite the fuse debug */
   int verbose;
   int foreground;
   char *progname;
@@ -160,11 +158,19 @@ extern struct fs_config config;
 struct fuse_lowlevel_ops* fs_operations(void);
 
 /* DEBUG output */
-#define D1(fmt, ...) if(config.debug > 0) fprintf(stderr, fmt "\n", ##__VA_ARGS__)
-#define D2(fmt, ...) if(config.debug > 1) fprintf(stderr, "     " fmt "\n", ##__VA_ARGS__)
-#define D3(fmt, ...) if(config.debug > 2) fprintf(stderr, "          " fmt "\n", ##__VA_ARGS__)
+#ifdef NO_DEBUG
+#define D1(fmt, ...)
+#define D2(fmt, ...)
+#define D3(fmt, ...)
+#else
+#define D1(fmt, ...) if(config._debug > 0) fprintf(stderr, fmt "\n", ##__VA_ARGS__)
+#define D2(fmt, ...) if(config._debug > 1) fprintf(stderr, "     " fmt "\n", ##__VA_ARGS__)
+#define D3(fmt, ...) if(config._debug > 2) fprintf(stderr, "          " fmt "\n", ##__VA_ARGS__)
+#endif
+
 #define E(fmt, ...)  fprintf(stderr, "\x1b[31mError:\x1b[0m " fmt "\n", ##__VA_ARGS__)
 #define W(fmt, ...)  fprintf(stderr, "Warning: " fmt "\n", ##__VA_ARGS__)
+
 
 /*
  * Prints byte array to its hexadecimal representation
@@ -177,6 +183,6 @@ struct fuse_lowlevel_ops* fs_operations(void);
     fprintf(stderr, "\n");				   \
   }
 
-#define H1(leading, v, len) if(config.debug > 0) Hx("", leading, v, len)
-#define H2(leading, v, len) if(config.debug > 1) Hx("     ", leading, v, len)
-#define H3(leading, v, len) if(config.debug > 2) Hx("          ", leading, v, len)
+#define H1(leading, v, len) if(config._debug > 0) Hx("", leading, v, len)
+#define H2(leading, v, len) if(config._debug > 1) Hx("     ", leading, v, len)
+#define H3(leading, v, len) if(config._debug > 2) Hx("          ", leading, v, len)

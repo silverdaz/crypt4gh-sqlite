@@ -25,6 +25,12 @@ OBJS =  src/fs.o src/sqlite-3.45.2/sqlite3.o src/main.o src/crypt4gh.o $(KEYS_OB
 
 all: $(TARGET)
 
+ifdef NO_DEBUG
+CFLAGS+=-DNO_DEBUG
+else
+CFLAGS+=-g
+endif
+
 $(libdir) $(bindir):
 	mkdir -p $@
 
