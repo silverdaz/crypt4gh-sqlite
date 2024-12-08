@@ -14,6 +14,20 @@
 
 #include "keys/kdf.h"
 
+/*
+ * Prints byte array to its hexadecimal representation
+ */
+#ifdef NO_DEBUG
+#define Dhex(leading, v, len)
+#else
+#define Dhex(leading, v, len) if(config.local_debug > 2) {		\
+    fprintf(stderr, "#           %s: ", leading);			\
+    size_t _i = 0;							\
+    uint8_t* _p = (uint8_t*)v;						\
+    for(;_i<len;_i++){ fprintf(stderr, "%02x", _p[_i] ); }		\
+    fprintf(stderr, "\n");						\
+  }
+#endif
 
 /* ==================================================================
  *
@@ -222,7 +236,7 @@ crypt4gh_sqlite_private_key_from_blob(char* line, size_t len,
       /* get the salt */
       salt_len = kdfoptions_len-4;
       salt = kdfoptions+4;
-      H3("Salt", salt, salt_len);
+      Dhex("Salt", salt, salt_len);
     }
   else
     {
@@ -238,7 +252,7 @@ crypt4gh_sqlite_private_key_from_blob(char* line, size_t len,
   uint16_t private_data_len = 0;
   decode_string(&p, &private_data, &private_data_len);
 
-  H3("Private data", private_data, private_data_len);
+  Dhex("Private data", private_data, private_data_len);
 
   if(strncmp(ciphername, "none", ciphername_len) == 0)
     {
@@ -267,11 +281,11 @@ crypt4gh_sqlite_private_key_from_blob(char* line, size_t len,
       goto bailout;
     }
   sodium_mprotect_readonly(shared_key);
-  H3("Shared key", shared_key, crypto_kx_SESSIONKEYBYTES);
+  Dhex("Shared key", shared_key, crypto_kx_SESSIONKEYBYTES);
 
   u_char nonce[12];
   memcpy(nonce, private_data, 12);
-  H3("Nonce", nonce, 12);
+  Dhex("Nonce", nonce, 12);
   D3("Encrypted data length: %d", (private_data_len - 12));
 
   unsigned long long decrypted_len;
