@@ -150,7 +150,6 @@ struct fs_config {
   /* multithreaded */
   int singlethread;
   int clone_fd;
-  int max_threads;
   int max_idle_threads;
 };
 
