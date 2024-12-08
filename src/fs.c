@@ -546,6 +546,8 @@ crypt4gh_sqlite_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
     }
 
     found = 1;
+    err = 0;
+    break; /* leave the stmt as-is now, don't call sqlite3_step() */
   }
 
   if(err || !found){
@@ -592,8 +594,8 @@ struct fuse_bufvec3 {
 static int c4gh_read(off_t offset, size_t size, struct fs_file *fh, char* b);
 
 static void
-crypt4gh_sqlite_read(fuse_req_t req, fuse_ino_t ino, size_t size,
-	 off_t offset, struct fuse_file_info *fi)
+crypt4gh_sqlite_read(fuse_req_t req, fuse_ino_t ino,
+		     size_t size, off_t offset, struct fuse_file_info *fi)
 {
   D1("READ ino:%lu | offset: %zu | size: %zu", ino, offset, size);
   struct fs_file *fh = (struct fs_file *)fi->fh;
@@ -612,7 +614,7 @@ crypt4gh_sqlite_read(fuse_req_t req, fuse_ino_t ino, size_t size,
    */
 
   size_t limit = offset + size;
-  size_t append_offset = fh->prepend_size + fh->payload_size;
+  size_t append_start = fh->prepend_size + fh->payload_size;
 
   struct fuse_buf *prepend_fbuf = NULL, *append_fbuf = NULL, *data_fbuf = NULL;
   size_t prepend_len = 0;
@@ -632,35 +634,33 @@ crypt4gh_sqlite_read(fuse_req_t req, fuse_ino_t ino, size_t size,
     /* memset(prepend_fbuf, '\0', sizeof(struct fuse_buf)); */
 
     prepend_fbuf->size = prepend_len;
-    //prepend_fbuf->flags = 0;
     prepend_fbuf->mem = fh->prepend + offset;
-    //prepend_fbuf->pos = offset; // not used with .mem
-
   }
+  D3("prepend_len: %zu | prepend size: %zu", prepend_len, fh->prepend_size);
 
   /* Prepare append data */
-  if(fh->append != NULL && limit > append_offset) {
+  if(fh->append != NULL && limit > append_start) {
 
-    append_len = (limit - append_offset);
+    append_len = limit - append_start;
     if ( size < append_len )
       append_len = size;
+    if(append_len > fh->append_size)
+      append_len = fh->append_size;
 
     append_fbuf = (struct fuse_buf *)calloc(1, sizeof(struct fuse_buf));
     if(!append_fbuf){ err = -ENOMEM; goto error; }
     /* memset(append_fbuf, '\0', sizeof(struct fuse_buf)); */
-
+    
+    off_t append_offset = (offset < append_start) ? 0 : (offset - append_start);
     append_fbuf->size = append_len;
-    //append_fbuf->flags = 0;
-    append_fbuf->mem = fh->append + ((offset < append_offset) ? 0 : (offset - append_offset));
-    //append_fbuf->pos = ((offset < append_offset) ? 0 : (offset - append_offset)); // not used with .mem
-
+    append_fbuf->mem = fh->append + append_offset;
+    D3("append offset: %ld", append_offset);
+    
   }
-
-  D3("prepend_len: %zu | prepend size: %zu", prepend_len, fh->prepend_size);
   D3("append_len: %zu | append size: %zu", append_len, fh->append_size);
 
   /* Now the data */
-  if(limit > fh->prepend_size && offset < append_offset
+  if(limit > fh->prepend_size && offset < append_start
      && fh->payload_size > 0){
 
     size_t data_offset = offset + prepend_len - fh->prepend_size;
