@@ -1148,6 +1148,83 @@ crypt4gh_sqlite_removexattr(fuse_req_t req, fuse_ino_t ino, const char *name)
 }
 
 /* =====================================
+   StatFS
+   ===================================== */
+
+static char *statfs_query = "SELECT count(inode) AS f_files, "
+                             "      CAST(sum(size) / 4096 AS int64)  as f_blocks, "
+                             "      max(length(name)) as f_namemax "
+                             "FROM entries e ";
+
+static void
+crypt4gh_sqlite_statfs(fuse_req_t req, fuse_ino_t ino)
+{
+  D1("STATFS %lu", ino);
+
+  sqlite3_stmt *stmt = NULL;
+  if(sqlite3_prepare_v2(config.db, statfs_query, -1, &stmt, NULL) /* != SQLITE_OK */ ||
+     !stmt){
+    E("Preparing statement: %s | %s", statfs_query, sqlite3_errmsg(config.db));
+    return (void) fuse_reply_err(req, EIO);
+  }
+  
+  /* Bind arguments */
+  // sqlite3_bind_int64(stmt, 1, ino);
+
+  print_expand_statement(stmt);
+
+  int rc = 0;
+  int found = 0;
+  while(1){ /* Execute the query. */
+
+    rc = sqlite3_step(stmt);
+    if(rc == SQLITE_DONE || rc == SQLITE_ERROR)
+      break;
+
+    if(!found && rc == SQLITE_ROW){
+
+      struct statvfs s;
+      memset(&s, 0, sizeof(struct statvfs));
+
+      /* Filesystem block size */
+      s.f_bsize = 4096;
+      /* Fragment size */
+      s.f_frsize = 4096;
+      /* Size of fs in f_frsize units */
+      s.f_blocks = (fsblkcnt_t)sqlite3_column_int64(stmt, 1);
+      /* Number of free blocks */
+      s.f_bfree = 0;
+      /* Number of free blocks for unprivileged users */
+      s.f_bavail = 0;
+      /* Number of inodes */
+      s.f_files = (fsfilcnt_t)sqlite3_column_int64(stmt, 0);
+      /* Number of free inodes */
+      s.f_ffree = 0;
+      /* Number of free inodes for unprivileged users */
+      s.f_favail = 0;
+      /* Filesystem ID */
+      s.f_fsid = ino;
+      // See: https://man7.org/linux/man-pages/man2/statfs.2.html#VERSIONS
+      /* Mount flags */
+      s.f_flag = ST_NOATIME | ST_NODEV | ST_NODIRATIME | ST_NOEXEC | ST_NOSUID;
+      if(!config.is_readwrite)
+	s.f_flag |= ST_RDONLY;
+      /* Maximum filename length */
+      s.f_namemax = (unsigned long)sqlite3_column_int64(stmt, 2);
+      
+
+      fuse_reply_statfs(req, &s);
+      found = 1;
+    }
+  }
+
+  sqlite3_finalize(stmt);
+
+  if(found) return;
+  fuse_reply_err(req, ENOSYS); // and stop asking
+}
+
+/* =====================================
    Operations
    ===================================== */
 
@@ -1175,6 +1252,6 @@ fs_operations(void)
   fs_oper.setxattr     = crypt4gh_sqlite_setxattr;
   fs_oper.removexattr  = crypt4gh_sqlite_removexattr;
 
-  //fs_oper.statfs       = crypt4gh_sqlite_statfs;
+  fs_oper.statfs       = crypt4gh_sqlite_statfs;
   return &fs_oper;
 }

@@ -21,18 +21,10 @@
 #endif
 
 #ifndef FUSE_USE_VERSION
-#define FUSE_USE_VERSION FUSE_MAKE_VERSION(3, 12)
+#define FUSE_USE_VERSION FUSE_MAKE_VERSION(3, 14)
 #endif
 
 #include <fuse_lowlevel.h>
-
-#ifndef FUSE_MAKE_VERSION
-#define FUSE_MAKE_VERSION(maj, min)  ((maj) * 100 + (min))
-#endif
-
-#ifndef FUSE_VERSION
-#define FUSE_VERSION FUSE_MAKE_VERSION(FUSE_MAJOR_VERSION, FUSE_MINOR_VERSION)
-#endif
 
 #include <assert.h>
 #include <stdio.h>
@@ -53,6 +45,7 @@
 #include <limits.h>
 #include <strings.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <ctype.h>
 
 #define OFF_FMT "%lu"
@@ -116,6 +109,7 @@ struct fs_config {
   time_t mounted_at;
   int direct_io;
 
+  int is_readwrite;
   unsigned int dperm;
   unsigned int fperm;
 
@@ -151,6 +145,7 @@ struct fs_config {
   int singlethread;
   int clone_fd;
   int max_idle_threads;
+  int max_threads;
 };
 
 

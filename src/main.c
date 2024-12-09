@@ -84,6 +84,7 @@ static struct fuse_opt fs_opts[] = {
 	CRYPT4GH_SQLITE_OPT("-s"              , singlethread    , 1),
 	CRYPT4GH_SQLITE_OPT("clone_fd"        , clone_fd        , 1),
 	CRYPT4GH_SQLITE_OPT("max_idle_threads=%u", max_idle_threads, 0),
+	CRYPT4GH_SQLITE_OPT("max_threads=%u", max_threads, 0),
 
 	CRYPT4GH_SQLITE_OPT("entry_timeout=%lf",     entry_timeout, 0),
 	CRYPT4GH_SQLITE_OPT("attr_timeout=%lf",      attr_timeout, 0),
@@ -286,9 +287,12 @@ int main(int argc, char *argv[])
   config.singlethread = 0;
   config.foreground = 0;
   config.mounted_at = time(NULL);
-  config.max_idle_threads = DEFAULT_MAX_THREADS;
+
   config.entry_timeout = DEFAULT_ENTRY_TIMEOUT;
   config.attr_timeout = DEFAULT_ATTR_TIMEOUT;
+
+  config.max_threads = DEFAULT_MAX_THREADS;
+  config.max_idle_threads = UINT_MAX;
 
   config.uid = getuid(); /* current user */
   config.gid = getgid(); /* current group */
@@ -353,10 +357,10 @@ int main(int argc, char *argv[])
     sqlite3_config(SQLITE_CONFIG_MULTITHREAD);
 
   /* checking if the DB is writable */
-  int is_readwrite = !access(config.db_path, R_OK | W_OK);
-  D1("Opening SQLite path: %s (%s)", config.db_path, (is_readwrite) ? "read-write" : "read-only");
+  config.is_readwrite = !access(config.db_path, R_OK | W_OK);
+  D1("Opening SQLite path: %s (%s)", config.db_path, (config.is_readwrite) ? "read-write" : "read-only");
   sqlite3_open_v2(config.db_path, &config.db,
-		  ((is_readwrite) ? SQLITE_OPEN_READWRITE : SQLITE_OPEN_READONLY)
+		  (config.is_readwrite ? SQLITE_OPEN_READWRITE : SQLITE_OPEN_READONLY)
 		  | SQLITE_OPEN_FULLMUTEX,
 		  NULL);
   if (config.db == NULL){
@@ -379,7 +383,7 @@ int main(int argc, char *argv[])
   operations = fs_operations();
 
   /* disable if you can't write in the DB file */
-  if(!is_readwrite){
+  if(!config.is_readwrite){
     operations->setxattr = NULL;
     operations->removexattr = NULL;
   }
@@ -422,12 +426,13 @@ int main(int argc, char *argv[])
     D2("Mode: single-threaded");
     res = fuse_session_loop(se);
   } else {
-    struct fuse_loop_config cf = {
-      .clone_fd = config.clone_fd,
-      .max_idle_threads = config.max_idle_threads,
-    };
-    D2("Mode: multi-threaded (max idle threads: %d)", cf.max_idle_threads);
-    res = fuse_session_loop_mt(se, &cf);
+    struct fuse_loop_config *cf = fuse_loop_cfg_create();
+    fuse_loop_cfg_set_idle_threads(cf, config.max_idle_threads);
+    fuse_loop_cfg_set_max_threads(cf, config.max_threads);
+    fuse_loop_cfg_set_clone_fd(cf, config.clone_fd);
+    D2("Mode: multi-threaded (max idle threads: %d)", config.max_threads);
+    res = fuse_session_loop_mt(se, cf);
+    fuse_loop_cfg_destroy(cf);
   }
 
  bailout_unmount:
