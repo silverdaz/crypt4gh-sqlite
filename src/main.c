@@ -426,13 +426,25 @@ int main(int argc, char *argv[])
     D2("Mode: single-threaded");
     res = fuse_session_loop(se);
   } else {
+    D2("Mode: multi-threaded (max threads: %d)", config.max_threads);
+#if FUSE_USE_VERSION < FUSE_MAKE_VERSION(3, 12)
+    struct fuse_loop_config_v1 cf1 = {
+      .max_idle_threads = config.max_threads,
+      .clone_fd = config.clone_fd,
+    };
+    struct fuse_loop_config cf;
+    fuse_loop_cfg_convert(&cf, &cf1);
+#else
     struct fuse_loop_config *cf = fuse_loop_cfg_create();
     fuse_loop_cfg_set_idle_threads(cf, config.max_idle_threads);
     fuse_loop_cfg_set_max_threads(cf, config.max_threads);
     fuse_loop_cfg_set_clone_fd(cf, config.clone_fd);
+#endif
     D2("Mode: multi-threaded (max idle threads: %d)", config.max_threads);
     res = fuse_session_loop_mt(se, cf);
+#if FUSE_USE_VERSION > FUSE_MAKE_VERSION(3, 12)
     fuse_loop_cfg_destroy(cf);
+#endif
   }
 
  bailout_unmount:
