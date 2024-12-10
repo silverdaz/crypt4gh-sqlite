@@ -48,6 +48,7 @@ static void usage(struct fuse_args *args)
 "                           read passphrase from environment variable <ENVVAR>\n"
 , args->argv[0]);
 }
+// TODO: add the undescribed options, like max_threads, and clone_fd
 
 
 #define CRYPT4GH_SQLITE_OPT(t, p, v) { t, offsetof(struct fs_config, p), v }
@@ -83,7 +84,7 @@ static struct fuse_opt fs_opts[] = {
 	/* if multithreaded */
 	CRYPT4GH_SQLITE_OPT("-s"              , singlethread    , 1),
 	CRYPT4GH_SQLITE_OPT("clone_fd"        , clone_fd        , 1),
-	CRYPT4GH_SQLITE_OPT("max_idle_threads=%u", max_idle_threads, 0),
+	CRYPT4GH_SQLITE_OPT("idle_threads=%u", idle_threads, 0),
 	CRYPT4GH_SQLITE_OPT("max_threads=%u", max_threads, 0),
 
 	CRYPT4GH_SQLITE_OPT("entry_timeout=%lf",     entry_timeout, 0),
@@ -272,8 +273,8 @@ int main(int argc, char *argv[])
   struct fuse_lowlevel_ops *operations;
  
 
-  if(fuse_version() < FUSE_VERSION ){
-    fprintf(stderr, "We need at least FUSE version %d\n", FUSE_VERSION);
+  if(fuse_version() < FUSE_MAKE_VERSION(3,12) ){
+    fprintf(stderr, "We need at least FUSE version %d\n", FUSE_MAKE_VERSION(3,12));
     fprintf(stderr, "You have FUSE version %d\n", fuse_version());
     return 1;
   }
@@ -292,7 +293,7 @@ int main(int argc, char *argv[])
   config.attr_timeout = DEFAULT_ATTR_TIMEOUT;
 
   config.max_threads = DEFAULT_MAX_THREADS;
-  config.max_idle_threads = UINT_MAX;
+  config.max_threads = UINT_MAX;
 
   config.uid = getuid(); /* current user */
   config.gid = getgid(); /* current group */
@@ -427,24 +428,12 @@ int main(int argc, char *argv[])
     res = fuse_session_loop(se);
   } else {
     D2("Mode: multi-threaded (max threads: %d)", config.max_threads);
-#if FUSE_USE_VERSION < FUSE_MAKE_VERSION(3, 12)
-    struct fuse_loop_config_v1 cf1 = {
-      .max_idle_threads = config.max_threads,
-      .clone_fd = config.clone_fd,
-    };
-    struct fuse_loop_config cf;
-    fuse_loop_cfg_convert(&cf, &cf1);
-#else
     struct fuse_loop_config *cf = fuse_loop_cfg_create();
-    fuse_loop_cfg_set_idle_threads(cf, config.max_idle_threads);
-    fuse_loop_cfg_set_max_threads(cf, config.max_threads);
     fuse_loop_cfg_set_clone_fd(cf, config.clone_fd);
-#endif
-    D2("Mode: multi-threaded (max idle threads: %d)", config.max_threads);
+    fuse_loop_cfg_set_idle_threads(cf, config.idle_threads);
+    fuse_loop_cfg_set_max_threads(cf, config.max_threads);
     res = fuse_session_loop_mt(se, cf);
-#if FUSE_USE_VERSION > FUSE_MAKE_VERSION(3, 12)
     fuse_loop_cfg_destroy(cf);
-#endif
   }
 
  bailout_unmount:

@@ -21,9 +21,21 @@ jobs:
         ./configure
         make
         sudo make install
+    - name: Print version
+      run: crypt4gh-sqlite.fs -V
     - name: Update the test and start the file system
       run: make -C example update up
-    - name: Test
+    - name: Test 1
       run: diff example/mnt/crypt4gh/cleartext <(C4GH_PASSPHRASE=hello crypt4gh decrypt --sk example/example.seckey < example/mnt/crypt4gh/encrypted 2>/dev/null)
+    - name: Test 2
+      run: diff example/subdir/file1.txt <(cat example/prepend.txt example/example.txt)
+    - name: Test 3
+      run: diff example/subdir/file2.txt <(cat example/example.txt example/append.txt)
+    - name: Test 4
+      run: diff example/extra/footer.txt example/append.txt
+    - name: Test 5
+      run: diff example/extra/header.txt example/prepend.txt
+    - name: Test 6
+      run: diff example/slim.txt example/example.txt
     - name: Tear down
       run: make -C example down
