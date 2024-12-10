@@ -23,7 +23,7 @@ jobs:
         meson configure -D examples=false
         ninja
         sudo ninja install
-        ldconfig -v
+        sudo ldconfig -v
         sudo sed -i '/user_allow_other/s/^#.*user_allow_other$/user_allow_other/' /usr/local/etc/fuse.conf
     - name: Install Crypt4GH
       run: sudo python3 -m pip install crypt4gh
