@@ -293,7 +293,7 @@ int main(int argc, char *argv[])
   config.attr_timeout = DEFAULT_ATTR_TIMEOUT;
 
   config.max_threads = DEFAULT_MAX_THREADS;
-  config.max_threads = UINT_MAX;
+  config.max_idle_threads = UINT_MAX;
 
   config.uid = getuid(); /* current user */
   config.gid = getgid(); /* current group */
