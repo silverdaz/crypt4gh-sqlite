@@ -84,7 +84,6 @@ static struct fuse_opt fs_opts[] = {
 	/* if multithreaded */
 	CRYPT4GH_SQLITE_OPT("-s"              , singlethread    , 1),
 	CRYPT4GH_SQLITE_OPT("clone_fd"        , clone_fd        , 1),
-	CRYPT4GH_SQLITE_OPT("idle_threads=%u", idle_threads, 0),
 	CRYPT4GH_SQLITE_OPT("max_threads=%u", max_threads, 0),
 
 	CRYPT4GH_SQLITE_OPT("entry_timeout=%lf",     entry_timeout, 0),
@@ -291,9 +290,7 @@ int main(int argc, char *argv[])
 
   config.entry_timeout = DEFAULT_ENTRY_TIMEOUT;
   config.attr_timeout = DEFAULT_ATTR_TIMEOUT;
-
   config.max_threads = DEFAULT_MAX_THREADS;
-  config.idle_threads = UINT_MAX;
 
   config.uid = getuid(); /* current user */
   config.gid = getgid(); /* current group */
@@ -430,7 +427,6 @@ int main(int argc, char *argv[])
     D2("Mode: multi-threaded (max threads: %d)", config.max_threads);
     struct fuse_loop_config *cf = fuse_loop_cfg_create();
     fuse_loop_cfg_set_clone_fd(cf, config.clone_fd);
-    fuse_loop_cfg_set_idle_threads(cf, config.idle_threads);
     fuse_loop_cfg_set_max_threads(cf, config.max_threads);
     res = fuse_session_loop_mt(se, cf);
     fuse_loop_cfg_destroy(cf);
