@@ -47,6 +47,7 @@
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <ctype.h>
+#include <grp.h>
 
 #define OFF_FMT "%lu"
 #define INO_FMT "%lu"
@@ -106,6 +107,7 @@ struct fs_config {
 
   uid_t uid;
   gid_t gid;
+  char* group_name;
   time_t mounted_at;
   int direct_io;
 

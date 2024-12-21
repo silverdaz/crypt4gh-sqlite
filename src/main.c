@@ -41,6 +41,7 @@ static void usage(struct fuse_args *args)
 "    -o dotdot              Shows '.' and '..' directories [default: ignored]\n"
 "    -o user_id=N           user id of the mount point [default: caller's uid]\n"
 "    -o group_id=N          group id of the mount point [default: caller's gid]\n"
+"    -o group_name=S        group name of the mount point [overwrites group_id]\n"
 "\n"
 "Crypt4GH Options (if enabled):\n"
 "    -o seckey=<path>       Absolute path to the Crypt4GH secret key\n"
@@ -76,6 +77,7 @@ static struct fuse_opt fs_opts[] = {
 	/* Mount group id */
 	CRYPT4GH_SQLITE_OPT("user_id=%u", uid, 0), // chill... it's not root
 	CRYPT4GH_SQLITE_OPT("group_id=%u", gid, 0),
+	CRYPT4GH_SQLITE_OPT("group_name=%s", group_name, 0),
 
 	/* in case Crypt4GH is enabled */
 	CRYPT4GH_SQLITE_OPT("seckey=%s"             , seckeypath         , 0),
@@ -139,7 +141,6 @@ fs_opt_proc(void *data, const char *arg, int key, struct fuse_args *outargs)
 	  abort();
 	}
 }
-
 
 static int
 read_passphrase(const char* prompt)
@@ -333,6 +334,21 @@ int main(int argc, char *argv[])
       fprintf(stderr, "Invalid group IDs\n");
       fprintf(stderr, "see `%s -h' for usage\n", argv[0]);
       exit(1);
+    }
+
+  if ( config.group_name )
+    {
+      //errno = 0;
+      struct group *gr = getgrnam(config.group_name);
+      if (gr == NULL){
+	//if( errno != 0){
+	  fprintf(stderr, "Invalid group name: %s\n", strerror(errno));
+	  fprintf(stderr, "see `%s -h' for usage\n", argv[0]);
+	  exit(1);
+	//}
+      } else {
+	config.gid = gr->gr_gid;
+      }
     }
 
   /* File and Dir permissions */
