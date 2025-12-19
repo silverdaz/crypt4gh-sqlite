@@ -36,7 +36,7 @@ CFLAGS="${CFLAGS} $(pkg-config --cflags libsodium fuse3)"
 LDFLAGS="$LDFLAGS $(pkg-config --libs libsodium fuse3)"
 AC_SEARCH_LIBS([sodium_malloc], [sodium], [],
 				[AC_MSG_ERROR("libsodium is required. Install it from https://libsodium.org/.")])
-AC_SEARCH_LIBS([fuse_new], [fuse3], [],
+AC_SEARCH_LIBS([fuse_lib_help], [fuse3], [],
 				[AC_MSG_ERROR("fuse3 is required. Install it from https://github.com/libfuse/libfuse.")])
 
 
@@ -179,8 +179,8 @@ AC_RUN_IFELSE(
 		ssl_library_ver=`cat conftest.ssllibver`
 		# Check version is supported.
 		case "$ssl_library_ver" in
-			#101*)   ;; # 1.1.x
-			#200*)   ;; # LibreSSL
+			101*)   ;; # 1.1.x
+			200*)   ;; # LibreSSL
 			3*)   ;; # OpenSSL 3.x
 		        *)
 				AC_MSG_ERROR([OpenSSL >= 3.x required (have "$ssl_library_ver")])
