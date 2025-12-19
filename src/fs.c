@@ -674,7 +674,7 @@ crypt4gh_sqlite_read(fuse_req_t req, fuse_ino_t ino,
     data_fbuf = (struct fuse_buf *)calloc(1, sizeof(struct fuse_buf));
     if(!data_fbuf){ err = -ENOMEM; goto error; }
 
-    if(fh->header){ // Try Crypt4GH data
+    if(config.seckeypath && fh->header){ // Try Crypt4GH data
 
       data_fbuf->mem = calloc(data_size, sizeof(char));
       if(!data_fbuf->mem){ err = -ENOMEM; goto error; }

@@ -83,6 +83,8 @@ static struct fuse_opt fs_opts[] = {
 	CRYPT4GH_SQLITE_OPT("seckey=%s"             , seckeypath         , 0),
 	CRYPT4GH_SQLITE_OPT("passphrase_from_env=%s", passphrase_from_env, 0),
 
+	CRYPT4GH_SQLITE_OPT("parent_fd=%u", parent_fd, -1),
+
 	/* if multithreaded */
 	CRYPT4GH_SQLITE_OPT("-s"              , singlethread    , 1),
 	CRYPT4GH_SQLITE_OPT("clone_fd"        , clone_fd        , 1),
@@ -205,10 +207,16 @@ c4gh_init(void)
 {
   int res = 0;
 
-  D1("Initializing the file system");
+  if(config.seckeypath == NULL){
+    D1("Crypt4GH decryption disabled");
+    return 0; // it's allowed
+  }
 
-  if(!config.seckeypath || *config.seckeypath != '/'){
-    E("Missing secret key path, or non-absolute path");
+  D1("Initializing Crypt4GH");
+  D1("Secret key path: %s", config.seckeypath);
+
+  if(*config.seckeypath != '/'){
+    E("Secret key must be an absolute path");
     res ++;
     goto bailout;
   }
@@ -288,6 +296,7 @@ int main(int argc, char *argv[])
   config.singlethread = 0;
   config.foreground = 0;
   config.mounted_at = time(NULL);
+  config.parent_fd = -1;
 
   config.entry_timeout = DEFAULT_ENTRY_TIMEOUT;
   config.attr_timeout = DEFAULT_ATTR_TIMEOUT;
@@ -435,6 +444,19 @@ int main(int argc, char *argv[])
      (config.dir_cache)?"yes":"no",
      config.fperm,
      config.dperm);
+
+  /* Notify the parent */
+  if(config.parent_fd > 0){
+    char data= '1';
+    if(write(config.parent_fd, &data, 1) != 1){
+      E("Error writing back to the parent: %s", strerror(errno));
+      res = 7;
+      /* should we close the parent_fd on error ? */
+      goto bailout_unmount;
+    }
+    close(config.parent_fd);
+    config.parent_fd = -1;
+  }
 
   if (config.singlethread){
     D2("Mode: single-threaded");

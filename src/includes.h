@@ -139,6 +139,9 @@ struct fs_config {
   uint8_t seckey[crypto_kx_SECRETKEYBYTES]; /* unlocked secret key. TODO: better protect it */
   uint8_t pubkey[crypto_kx_PUBLICKEYBYTES];
 
+  /* PAM notify */
+  int parent_fd;
+
   /* SQLite database */
   char* db_path;
   sqlite3* db;
