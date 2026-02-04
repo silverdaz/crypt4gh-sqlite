@@ -1240,6 +1240,182 @@ crypt4gh_sqlite_statfs(fuse_req_t req, fuse_ino_t ino)
 }
 
 /* =====================================
+   StatX (extended stat: we point at the underlying link)
+   ===================================== */
+
+#ifdef HAVE_STATX
+
+static char *statx_query = \
+  "SELECT case when f.rel_path is null then null "
+  "            else concat(rtrim(f.mountpoint,'/'), '/', ltrim(f.rel_path,'/')) "
+  "       end AS path, "
+  "       e.ctime, e.mtime, e.nlink, e.size, e.is_dir "
+  "FROM entries e "
+  "LEFT JOIN files f ON f.inode = e.inode " // LEFT: might be a directory
+  "WHERE inode = ?1";
+
+static void
+crypt4gh_sqlite_statx(fuse_req_t req, fuse_ino_t ino,
+		      int flags, int mask, struct fuse_file_info *fi)
+{
+  D1("STATX %lu", ino);
+
+  sqlite3_stmt *stmt = NULL;
+  if(sqlite3_prepare_v2(config.db, statx_query, -1, &stmt, NULL) /* != SQLITE_OK */ ||
+     !stmt){
+    E("Preparing statement: %s | %s", statx_query, sqlite3_errmsg(config.db));
+    return (void) fuse_reply_err(req, EIO);
+  }
+
+  /* Bind arguments */
+  sqlite3_bind_int64(stmt, 1, ino);
+
+  print_expand_statement(stmt);
+
+  int rc = 0;
+  int found = 0;
+  int err = EIO;
+
+  while(1){ /* Execute the query. */
+
+    rc = sqlite3_step(stmt);
+    if(rc == SQLITE_DONE || rc == SQLITE_ERROR)
+      break;
+
+    if(!found && rc == SQLITE_ROW){
+
+      struct statx s;
+      memset(&s, 0, sizeof(struct statx));
+
+      const char *filepath = sqlite3_column_text(stmt, 0);
+
+      D3("filepath    : %s", filepath);
+      if(filepath){
+	if (statx(AT_FDCWD, filepath, flags, mask, &s) == -1){ // follow link
+	  err = errno;
+	  goto bailout;
+	}
+      } else {
+	/* no filepath: can be a directory, or a in-memory file */
+
+      }
+
+      if(mask &  STATX_INO){
+	s.stx_ino = ino;
+	s.stx_mask |= STATX_INO;
+      }
+
+      // ctime: 1, mtime: 2, nlink: 3, size: 4, is_dir: 5
+      if(mask &  STATX_CTIME){
+	s.stx_ctime.tv_sec = (time_t)sqlite3_column_int(stmt, 1);
+	s.stx_ctime.tv_nsec = 0L;
+	s.stx_mask |= STATX_CTIME;
+      }
+
+      if(mask &  STATX_MTIME){
+	s.stx_mtime.tv_sec = (time_t)sqlite3_column_int(stmt, 2);
+	s.stx_mtime.tv_nsec = 0L;
+	s.stx_mask |= STATX_MTIME;
+      }
+
+      if(mask &  STATX_ATIME){
+	s.stx_atime.tv_sec = (time_t)time(NULL);
+	s.stx_atime.tv_nsec = 0L;
+	s.stx_mask |= STATX_ATIME;
+      }
+
+      /* we don't show creation time */
+      s.stx_btime.tv_sec = 0L;
+      s.stx_btime.tv_nsec = 0L;
+      s.stx_mask &= ~STATX_BTIME;
+
+      if(mask &  STATX_NLINK){
+	s.stx_nlink = (nlink_t)(uint32_t)sqlite3_column_int(stmt, 3);
+	s.stx_mask |= STATX_NLINK;
+      }
+
+      if(mask &  STATX_SIZE){
+	s.stx_size = (uint64_t)sqlite3_column_int(stmt, 4);
+	s.stx_mask |= STATX_SIZE;
+      }
+
+      if(mask &  STATX_UID){
+	s.stx_uid = config.uid;
+	s.stx_mask |= STATX_UID;
+      }
+
+      if(mask &  STATX_GID){
+	s.stx_gid = config.gid;
+	s.stx_mask |= STATX_GID;
+      }
+
+      if(mask &  STATX_MODE){
+	s.stx_mask |= STATX_MODE;
+	if(sqlite3_column_int(stmt, 5)) // is_dir
+	  s.stx_mode = S_IFDIR | config.dperm;
+	else
+	  s.stx_mode = S_IFREG | config.fperm;
+      }
+
+      s.stx_rdev_major = 0;
+      s.stx_rdev_minor = 0;
+      s.stx_dev_major = major(config.st_dev);
+      s.stx_dev_minor = minor(config.st_dev);
+
+      if(mask &  STATX_MNT_ID){
+	s.stx_mnt_id = config.st_dev;
+	s.stx_mask |= STATX_MNT_ID;
+      }
+
+      /* In case we followed the link,
+       * we'll have the following already filled, including s.stx_mask, using "flags"
+       *
+       * __u32 stx_blksize;     // Block size for filesystem I/O
+       * __u64 stx_attributes;  // Extra file attribute indicators
+       * __u64 stx_blocks;      // Number of 512B blocks allocated
+       * __u64 stx_attributes_mask; // Mask to show what's supported in stx_attributes
+       *
+       * // Direct I/O alignment restrictions
+       * __u32 stx_dio_mem_align;
+       * __u32 stx_dio_offset_align;
+       *
+       * __u64 stx_subvol;      // Subvolume identifier
+       *
+       * // Direct I/O atomic write limits
+       * __u32 stx_atomic_write_unit_min;
+       * __u32 stx_atomic_write_unit_max;
+       * __u32 stx_atomic_write_segments_max;
+       *
+       * // File offset alignment for direct I/O reads
+       * __u32 stx_dio_read_offset_align;
+       *
+       * // Direct I/O atomic write max opt limit
+       * __u32 stx_atomic_write_unit_max_opt;
+       *
+       */
+
+      fuse_reply_statx(req, flags, &s, config.attr_timeout);
+      found = 1;
+    }
+
+  }
+
+  if(found)
+    err = 0;
+
+  /* fallthrough */
+
+bailout:
+  sqlite3_finalize(stmt);
+
+  if(err)
+    fuse_reply_err(req, err);
+}
+
+#endif // ! HAVE_STATX
+
+
+/* =====================================
    Operations
    ===================================== */
 
@@ -1268,5 +1444,10 @@ fs_operations(void)
   fs_oper.removexattr  = crypt4gh_sqlite_removexattr;
 
   fs_oper.statfs       = crypt4gh_sqlite_statfs;
+
+#ifdef HAVE_STATX
+  fs_oper.statx       = crypt4gh_sqlite_statx;
+#endif
+
   return &fs_oper;
 }

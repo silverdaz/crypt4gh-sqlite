@@ -363,6 +363,7 @@ AC_CHECK_FUNCS([ \
 	memset_s \
 	strdup \
 	strerror \
+	statx \
 ])
 
 	# memmem \

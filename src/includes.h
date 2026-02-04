@@ -46,6 +46,7 @@
 #include <strings.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
+#include <sys/sysmacros.h> /* feature_test_macros for major/minor(st_dev) */
 #include <ctype.h>
 #include <grp.h>
 
@@ -98,6 +99,11 @@ void freezero(void *, size_t);
 int timingsafe_bcmp(const void *, const void *, size_t);
 #endif
 
+/* reset STATX */
+#if FUSE_MAJOR_VERSION < 3 || \
+    (FUSE_MAJOR_VERSION == 3 && FUSE_MINOR_VERSION < 18)
+#undef HAVE_STATX
+#endif
 
 #include "sqlite-3.45.2/sqlite3.h"
 #include "crypt4gh.h"
