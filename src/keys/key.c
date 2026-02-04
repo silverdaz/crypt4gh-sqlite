@@ -332,12 +332,14 @@ crypt4gh_sqlite_private_key_from_file(const char* filename,
   int fd = -1;
 
   D2("Opening file: %s", filename);
-  if ((fd = open(filename, O_RDONLY)) == -1)
+  if ((fd = open(filename, O_RDONLY)) == -1){
+    E("Can't open('%s'): [%d] %s", filename, errno, strerror(errno) );
     return 1;
+  }
 
   struct stat sb;
   if(fstat(fd, &sb)){
-    D2("Can't stat filename '%s': [%d] %s", filename, errno, strerror(errno) );
+    E("Can't stat filename '%s': [%d] %s", filename, errno, strerror(errno) );
     return 1;
   }
   buflen = sb.st_size;

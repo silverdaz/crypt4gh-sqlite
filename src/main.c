@@ -298,6 +298,8 @@ int main(int argc, char *argv[])
   config.mounted_at = time(NULL);
   config.parent_fd = -1;
 
+  config.st_dev = getpid(); /* to distinguish from other FUSE file systems */
+
   config.entry_timeout = DEFAULT_ENTRY_TIMEOUT;
   config.attr_timeout = DEFAULT_ATTR_TIMEOUT;
   config.max_threads = DEFAULT_MAX_THREADS;

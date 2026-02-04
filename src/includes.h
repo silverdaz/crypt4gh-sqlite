@@ -129,6 +129,8 @@ struct fs_config {
   double entry_timeout; /* in seconds, for which name lookups will be cached */
   double attr_timeout; /* in seconds for which file/directory attributes are cached */
 
+  dev_t st_dev;
+
   unsigned int dir_cache;
   unsigned int file_cache;
 

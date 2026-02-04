@@ -40,8 +40,9 @@ crypt4gh_sqlite_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *f
   if( ino == FUSE_ROOT_ID ){ /* It's the root directory itself */
     s.st_ino = ino;
     s.st_mode = S_IFDIR | config.dperm;
-    s.st_nlink = 1;
+    s.st_nlink = 2;
     s.st_size = 0;
+    s.st_dev = config.st_dev;
     time_t now = time(NULL);
     struct timespec mt = { .tv_sec = config.mounted_at, .tv_nsec = 0L },
                     at = { .tv_sec = now              , .tv_nsec = 0L },
@@ -49,7 +50,6 @@ crypt4gh_sqlite_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *f
     s.st_mtim = mt;
     s.st_atim = at;
     s.st_ctim = ct;
-    D2("=> root dir");
     return (void) fuse_reply_attr(req, &s, config.attr_timeout);
   }
 
@@ -80,10 +80,11 @@ crypt4gh_sqlite_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *f
       time_t mtime = (time_t)sqlite3_column_int(stmt, 1);
       s.st_nlink = (nlink_t)(uint32_t)sqlite3_column_int(stmt, 2);
       s.st_size = (uint64_t)sqlite3_column_int(stmt, 3);
+      s.st_dev = config.st_dev;
       
       if(sqlite3_column_int(stmt, 4)) // is_dir
 	s.st_mode = S_IFDIR | config.dperm;
-      else 
+      else
 	s.st_mode = S_IFREG | config.fperm;
       
       time_t now = time(NULL);
@@ -93,6 +94,8 @@ crypt4gh_sqlite_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *f
       s.st_mtim = mt;
       s.st_atim = at;
       s.st_ctim = ct;
+
+      D3("GETATTR %lu => mode: %o", ino, s.st_mode);
 
       fuse_reply_attr(req, &s, config.attr_timeout);
       found = 1;
@@ -126,6 +129,7 @@ __attribute__((nonnull(3)))
   e.attr.st_gid = config.gid;
   //e.attr.st_blksize = 512;     /* Block size for filesystem I/O */
   //e.attr.st_blocks = 1;        /* Number of 512B blocks allocated */
+  e.attr.st_dev = config.st_dev;
 
   sqlite3_stmt *stmt = NULL;
   if( sqlite3_prepare_v2(config.db, lookup_query, -1, &stmt, NULL) /* != SQLITE_OK */ ||
@@ -178,9 +182,13 @@ __attribute__((nonnull(3)))
     
     if(sqlite3_column_int(stmt, 5)) // is_dir
       e.attr.st_mode = S_IFDIR | config.dperm;
-    else 
+    else
       e.attr.st_mode = S_IFREG | config.fperm;
-    
+
+    e.attr.st_dev = config.st_dev;
+
+    D3("LOOKUP [%lu]/%s => ino:%lu | mode:%o", inode_p, name, e.ino, e.attr.st_mode);
+
     fuse_reply_entry(req, &e);
     found = 1; // success
   }
@@ -294,14 +302,20 @@ crypt4gh_sqlite_readdir_plus(fuse_req_t req, fuse_ino_t ino, size_t size,
   e.attr.st_uid = config.uid;
   e.attr.st_gid = config.gid;
 
-  /* Handle the '.' and '..' di*/
+  e.attr.st_dev = config.st_dev;
+
+  /* Handle '.' and '..'
+   * 
+   * Not sure we can use inode=ino for '.'  (ie same directory)
+   *                 and inode=2   for '..' (ie parent directory)
+   */
   if(!config.show_dotdot || offset >= 2)
     goto content;
 
   e.attr.st_mtim = mt;
   e.attr.st_ctim = ct;
   e.attr.st_atim = at;
-  e.attr.st_nlink = 1;
+  e.attr.st_nlink = 2;
   e.attr.st_size = 0;
   e.attr.st_mode = S_IFDIR | config.dperm;
 
@@ -365,12 +379,12 @@ content:
     
       if(sqlite3_column_int(stmt, 6)) // is_dir
 	e.attr.st_mode = S_IFDIR | config.dperm;
-      else 
+      else
 	e.attr.st_mode = S_IFREG | config.fperm;
       
       /* add the entry to the buffer and check size */
       char* pe = (char*)sqlite3_column_text(stmt, 1);
-      D3(" - [%lu]/%s (inode:%lu)", ino, pe, e.ino);
+      D3(" - [%lu]/%s (inode:%lu | mode:%o)", ino, pe, e.ino, e.attr.st_mode);
       entsize = fuse_add_direntry_plus(req, p, remainder, pe, &e, ++offset); /* next offset */
 
       D3("entsize: %zu | remainder: %zu | size: %zu", entsize, remainder, size);
@@ -975,8 +989,8 @@ crypt4gh_sqlite_xattr_size(fuse_req_t req, fuse_ino_t ino,
 
   if(rc) /* shouldn't reach here */
     fuse_reply_err(req, EIO);
-  else
-    fuse_reply_xattr(req, value_len); /* nothing found and no error */
+  else /* nothing found and no error */
+    fuse_reply_err(req, ENODATA);
 }
 
 static void
@@ -1021,7 +1035,7 @@ crypt4gh_sqlite_xattr_value(fuse_req_t req, fuse_ino_t ino, size_t size,
       if(size < value_len)
 	fuse_reply_err(req, ERANGE);
       else{
-	fuse_reply_buf(req, value, value_len); // works if value_len == 0
+	fuse_reply_buf(req, value, value_len); // works for value_len = 0
       }
     }
   }
@@ -1032,9 +1046,10 @@ crypt4gh_sqlite_xattr_value(fuse_req_t req, fuse_ino_t ino, size_t size,
 
   if(rc) /* shouldn't reach here */
     fuse_reply_err(req, EIO);
-  else
-    fuse_reply_buf(req, NULL, 0); /* nothing found and no error */
-
+  else /* nothing found and no error */
+    fuse_reply_err(req, ENODATA);
+  //fuse_reply_buf(req, NULL, 0);  // this is an error to return a zero-length value
+  
   if(buf) free(buf);
 }
 
