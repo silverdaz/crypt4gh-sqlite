@@ -42,7 +42,7 @@ crypt4gh_sqlite_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *f
     s.st_mode = S_IFDIR | config.dperm;
     s.st_nlink = 2;
     s.st_size = 0;
-    s.st_dev = config.st_dev;
+    s.st_dev = config.pid;
     time_t now = time(NULL);
     struct timespec mt = { .tv_sec = config.mounted_at, .tv_nsec = 0L },
                     at = { .tv_sec = now              , .tv_nsec = 0L },
@@ -80,7 +80,7 @@ crypt4gh_sqlite_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *f
       time_t mtime = (time_t)sqlite3_column_int(stmt, 1);
       s.st_nlink = (nlink_t)(uint32_t)sqlite3_column_int(stmt, 2);
       s.st_size = (uint64_t)sqlite3_column_int(stmt, 3);
-      s.st_dev = config.st_dev;
+      s.st_dev = config.pid;
       
       if(sqlite3_column_int(stmt, 4)) // is_dir
 	s.st_mode = S_IFDIR | config.dperm;
@@ -129,7 +129,7 @@ __attribute__((nonnull(3)))
   e.attr.st_gid = config.gid;
   //e.attr.st_blksize = 512;     /* Block size for filesystem I/O */
   //e.attr.st_blocks = 1;        /* Number of 512B blocks allocated */
-  e.attr.st_dev = config.st_dev;
+  e.attr.st_dev = config.pid;
 
   sqlite3_stmt *stmt = NULL;
   if( sqlite3_prepare_v2(config.db, lookup_query, -1, &stmt, NULL) /* != SQLITE_OK */ ||
@@ -185,7 +185,7 @@ __attribute__((nonnull(3)))
     else
       e.attr.st_mode = S_IFREG | config.fperm;
 
-    e.attr.st_dev = config.st_dev;
+    e.attr.st_dev = config.pid;
 
     D3("LOOKUP [%lu]/%s => ino:%lu | mode:%o", inode_p, name, e.ino, e.attr.st_mode);
 
@@ -302,7 +302,7 @@ crypt4gh_sqlite_readdir_plus(fuse_req_t req, fuse_ino_t ino, size_t size,
   e.attr.st_uid = config.uid;
   e.attr.st_gid = config.gid;
 
-  e.attr.st_dev = config.st_dev;
+  e.attr.st_dev = config.pid;
 
   /* Handle '.' and '..'
    * 
@@ -1252,7 +1252,7 @@ static char *statx_query = \
   "       e.ctime, e.mtime, e.nlink, e.size, e.is_dir "
   "FROM entries e "
   "LEFT JOIN files f ON f.inode = e.inode " // LEFT: might be a directory
-  "WHERE inode = ?1";
+  "WHERE e.inode = ?1";
 
 static void
 crypt4gh_sqlite_statx(fuse_req_t req, fuse_ino_t ino,
@@ -1300,56 +1300,57 @@ crypt4gh_sqlite_statx(fuse_req_t req, fuse_ino_t ino,
 
       }
 
-      if(mask &  STATX_INO){
+      if(mask & STATX_INO){
 	s.stx_ino = ino;
 	s.stx_mask |= STATX_INO;
       }
 
       // ctime: 1, mtime: 2, nlink: 3, size: 4, is_dir: 5
-      if(mask &  STATX_CTIME){
+      if(mask & STATX_CTIME){
 	s.stx_ctime.tv_sec = (time_t)sqlite3_column_int(stmt, 1);
 	s.stx_ctime.tv_nsec = 0L;
 	s.stx_mask |= STATX_CTIME;
       }
 
-      if(mask &  STATX_MTIME){
+      if(mask & STATX_MTIME){
 	s.stx_mtime.tv_sec = (time_t)sqlite3_column_int(stmt, 2);
 	s.stx_mtime.tv_nsec = 0L;
 	s.stx_mask |= STATX_MTIME;
       }
 
-      if(mask &  STATX_ATIME){
+      if(mask & STATX_ATIME){
 	s.stx_atime.tv_sec = (time_t)time(NULL);
 	s.stx_atime.tv_nsec = 0L;
 	s.stx_mask |= STATX_ATIME;
       }
 
-      /* we don't show creation time */
-      s.stx_btime.tv_sec = 0L;
-      s.stx_btime.tv_nsec = 0L;
-      s.stx_mask &= ~STATX_BTIME;
+      if(mask & STATX_BTIME){
+	s.stx_btime.tv_sec = config.created_at;
+	s.stx_btime.tv_nsec = 0L;
+	s.stx_mask |= STATX_BTIME;
+      }
 
-      if(mask &  STATX_NLINK){
+      if(mask & STATX_NLINK){
 	s.stx_nlink = (nlink_t)(uint32_t)sqlite3_column_int(stmt, 3);
 	s.stx_mask |= STATX_NLINK;
       }
 
-      if(mask &  STATX_SIZE){
+      if(mask & STATX_SIZE){
 	s.stx_size = (uint64_t)sqlite3_column_int(stmt, 4);
 	s.stx_mask |= STATX_SIZE;
       }
 
-      if(mask &  STATX_UID){
+      if(mask & STATX_UID){
 	s.stx_uid = config.uid;
 	s.stx_mask |= STATX_UID;
       }
 
-      if(mask &  STATX_GID){
+      if(mask & STATX_GID){
 	s.stx_gid = config.gid;
 	s.stx_mask |= STATX_GID;
       }
 
-      if(mask &  STATX_MODE){
+      if(mask & STATX_MODE){
 	s.stx_mask |= STATX_MODE;
 	if(sqlite3_column_int(stmt, 5)) // is_dir
 	  s.stx_mode = S_IFDIR | config.dperm;
@@ -1359,11 +1360,11 @@ crypt4gh_sqlite_statx(fuse_req_t req, fuse_ino_t ino,
 
       s.stx_rdev_major = 0;
       s.stx_rdev_minor = 0;
-      s.stx_dev_major = major(config.st_dev);
-      s.stx_dev_minor = minor(config.st_dev);
+      s.stx_dev_major = major(config.pid);
+      s.stx_dev_minor = minor(config.pid);
 
-      if(mask &  STATX_MNT_ID){
-	s.stx_mnt_id = config.st_dev;
+      if(mask & STATX_MNT_ID){ /* Note: seems to be ignored, by removing the bit */
+	s.stx_mnt_id = (uint64_t)config.pid; // we use the process id
 	s.stx_mask |= STATX_MNT_ID;
       }
 

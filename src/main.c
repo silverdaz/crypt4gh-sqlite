@@ -298,7 +298,8 @@ int main(int argc, char *argv[])
   config.mounted_at = time(NULL);
   config.parent_fd = -1;
 
-  config.st_dev = getpid(); /* to distinguish from other FUSE file systems */
+  config.pid = getpid(); /* used in st_dev to distinguish from other FUSE file systems */
+  config.created_at = config.mounted_at; /* default for creation time (stx_btime) */
 
   config.entry_timeout = DEFAULT_ENTRY_TIMEOUT;
   config.attr_timeout = DEFAULT_ATTR_TIMEOUT;
@@ -398,6 +399,20 @@ int main(int argc, char *argv[])
   }
   (void)sqlite3_extended_result_codes(config.db, 0); // no extended codes
 
+
+#ifdef HAVE_STATX
+  /* Get creation time */
+  struct statx sx;
+  memset(&sx, 0, sizeof(struct statx));
+
+  if (statx(AT_FDCWD, config.db_path, AT_NO_AUTOMOUNT, STATX_BTIME, &sx) == -1){ // follow link
+    E("Error statx(%s): %s", config.db_path, strerror(errno));
+  } else {
+    if(sx.stx_mask & STATX_BTIME) // we got a btime
+      config.created_at = sx.stx_btime.tv_sec;
+  }
+#endif
+
   /* Crypt4GH options */
   if(c4gh_init()){
     E("Parsing Crypt4GH options");
@@ -440,12 +455,14 @@ int main(int argc, char *argv[])
     goto bailout_unmount;
   }
 
-  D2("PID: %d", getpid());
+  D2("PID: %d", config.pid);
   D2("File cache: %s | Dir cache: %s | File perm: o%o | Dir perm: o%o",
      (config.file_cache)?"yes":"no",
      (config.dir_cache)?"yes":"no",
      config.fperm,
      config.dperm);
+  D2_("Mounted at: %s", ctime(&config.mounted_at));
+  D2_("Created at: %s", ctime(&config.created_at));
 
   /* Notify the parent */
   if(config.parent_fd > 0){

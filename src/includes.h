@@ -115,6 +115,7 @@ struct fs_config {
   gid_t gid;
   char* group_name;
   time_t mounted_at;
+  time_t created_at;
   int direct_io;
 
   int is_readwrite;
@@ -135,7 +136,7 @@ struct fs_config {
   double entry_timeout; /* in seconds, for which name lookups will be cached */
   double attr_timeout; /* in seconds for which file/directory attributes are cached */
 
-  dev_t st_dev;
+  pid_t pid; // used for st_dev
 
   unsigned int dir_cache;
   unsigned int file_cache;
@@ -166,14 +167,17 @@ struct fuse_lowlevel_ops* fs_operations(void);
 
 /* DEBUG output */
 #ifdef NO_DEBUG
-#define D1(fmt, ...)
-#define D2(fmt, ...)
-#define D3(fmt, ...)
+#define D1_(fmt, ...)
+#define D2_(fmt, ...)
+#define D3_(fmt, ...)
 #else
-#define D1(fmt, ...) if(config.local_debug > 0) fprintf(stderr, "# " fmt "\n", ##__VA_ARGS__)
-#define D2(fmt, ...) if(config.local_debug > 1) fprintf(stderr, "#      " fmt "\n", ##__VA_ARGS__)
-#define D3(fmt, ...) if(config.local_debug > 2) fprintf(stderr, "#           " fmt "\n", ##__VA_ARGS__)
+#define D1_(fmt, ...) if(config.local_debug > 0) fprintf(stderr, "# " fmt, ##__VA_ARGS__)
+#define D2_(fmt, ...) if(config.local_debug > 1) fprintf(stderr, "#      " fmt, ##__VA_ARGS__)
+#define D3_(fmt, ...) if(config.local_debug > 2) fprintf(stderr, "#           " fmt, ##__VA_ARGS__)
 #endif
 
+#define D1(fmt, ...) D1_(fmt "\n", ##__VA_ARGS__)
+#define D2(fmt, ...) D2_(fmt "\n", ##__VA_ARGS__)
+#define D3(fmt, ...) D3_(fmt "\n", ##__VA_ARGS__)
 #define E(fmt, ...)  fprintf(stderr, "\x1b[31mError:\x1b[0m " fmt "\n", ##__VA_ARGS__)
 #define W(fmt, ...)  fprintf(stderr, "Warning: " fmt "\n", ##__VA_ARGS__)
