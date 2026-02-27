@@ -1,0 +1,40 @@
+title: crypt4gh-sqlite
+description: A FUSE file system backed by an SQLite database, serving Crypt4GH-encrypted files with on-the-fly decryption and header re-encryption.
+baseurl: "/crypt4gh-sqlite"
+url: "https://silverdaz.github.io"
+
+repository: silverdaz/crypt4gh-sqlite
+github_url: https://github.com/silverdaz/crypt4gh-sqlite
+
+theme: minima
+
+# remote_theme: pages-themes/minimal@v0.2.0
+# remote_theme: pages-themes/hacker@v0.2.0
+# plugins:
+# - jekyll-remote-theme # add this line to the plugins list if you already have one
+
+
+
+markdown: kramdown
+highlighter: rouge
+
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+
+
+nav:
+  - title: Home
+    url: /
+  - title: Installation
+    url: /installation/
+  - title: Usage
+    url: /usage/
+  - title: Database Schema
+    url: /schema/
+  - title: Examples
+    url: /examples/
+  - title: Architecture
+    url: /architecture/
+  - title: CI / Build
+    url: /ci/
