@@ -36,7 +36,7 @@ jobs:
     - name: Print version
       run: crypt4gh-sqlite.fs -V
     - name: Update the test and start the file system
-      run: make -C example update up
+      run: make -C example up
     - name: Test 1
       run: diff example/mnt/crypt4gh/cleartext <(C4GH_PASSPHRASE=hello crypt4gh decrypt --sk example/example.seckey < example/mnt/crypt4gh/encrypted 2>/dev/null)
     - name: Test 2
